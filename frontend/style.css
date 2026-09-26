@@ -808,3 +808,15 @@ table.dup-pick-table th.dup-pick-th, table.dup-pick-table td.dup-pick-td { width
 :root:not([data-theme='dark']) .tile.on, :root:not([data-theme='dark']) .dup-group.on { background: #fff5f1; }
 :root:not([data-theme='dark']) .drop-zone { backdrop-filter: none; -webkit-backdrop-filter: none; background: #fdfcfb; }
 :root:not([data-theme='dark']) #emptyState::before { background: radial-gradient(45% 50% at 50% 0%, #fff, transparent 70%), radial-gradient(40% 45% at 92% 100%, rgba(238, 110, 70, .14), transparent 70%); }
+
+/* the drop zone is one big click target */
+.drop-zone { cursor: pointer; user-select: none; -webkit-user-select: none; }
+.drop-zone:hover { border-color: #ff6a3d; }
+.drop-zone:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+:root:not([data-theme='dark']) .drop-zone:hover { box-shadow: 0 14px 40px rgba(238, 75, 43, .18); }
+
+/* dark mode: keep the disabled Download button's label readable */
+[data-theme='dark'] .btn.success:disabled { opacity: 1; color: #d9d3ce; background: #3a3a41; }
+
+/* light mode: keep the disabled Download button's label readable */
+:root:not([data-theme='dark']) .btn.success:disabled { opacity: 1; color: #5b555d; background: #e4dcd4; }

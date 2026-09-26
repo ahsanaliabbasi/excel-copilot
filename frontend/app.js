@@ -37,62 +37,64 @@ function toast(msg, isError = false) {
 // opens the OS file picker, so it works even if that dialog is glitchy on
 // your machine/remote desktop).
 // ---------------------------------------------------------------------------
-// A fresh, un-hidden input is created for every click: some embedded browsers (IDE previews, remote
-// desktops) ignore .click() on a display:none input. The original input is kept as a fallback.
 function openFilePicker() {
-  try {
-    const inp = document.createElement("input");
-    inp.type = "file"; inp.accept = ".xlsx";
-    inp.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
-    inp.addEventListener("change", () => { if (inp.files[0]) handleFile(inp.files[0]); inp.remove(); });
-    document.body.appendChild(inp);
-    inp.click();
-  } catch (e) { $("#fileInput").click(); }
+  const input = $("#fileInput");
+  input.value = "";                    // so choosing the same file again still fires "change"
+  input.click();
 }
 $("#uploadBtn").addEventListener("click", openFilePicker);
 const uploadBtn2 = $("#uploadBtn2");
-if (uploadBtn2) uploadBtn2.addEventListener("click", openFilePicker);
+if (uploadBtn2) uploadBtn2.addEventListener("click", (e) => { e.stopPropagation(); openFilePicker(); });
+// clicking anywhere in the drop zone (icon, text, empty space) uploads too
+const dz = $("#dropZone");
+if (dz) {
+  dz.addEventListener("click", openFilePicker);
+  dz.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openFilePicker(); } });
+}
 
 $("#fileInput").addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (file) handleFile(file);
 });
 
+// Drag and drop: works anywhere on the page. The drop zone lights up while a file is dragged over the
+// window; the enter/leave counter stops it flickering when the pointer crosses child elements.
 const dropZone = $("#dropZone");
-if (dropZone) {
-  ["dragenter", "dragover"].forEach((evt) =>
-    dropZone.addEventListener(evt, (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dropZone.classList.add("dragover");
-    })
-  );
-  ["dragleave", "drop"].forEach((evt) =>
-    dropZone.addEventListener(evt, (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dropZone.classList.remove("dragover");
-    })
-  );
-  dropZone.addEventListener("drop", (e) => {
-    const file = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".xlsx")) {
-      toast("Please drop a .xlsx file", true);
-      return;
-    }
-    handleFile(file);
-  });
+let dragDepth = 0;
+const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+function takeDroppedFile(e) {
+  const dt = e.dataTransfer;
+  let file = dt && dt.files && dt.files[0];
+  if (!file && dt && dt.items) {                       // some browsers only expose the file through items
+    for (const it of dt.items) { if (it.kind === "file") { file = it.getAsFile(); if (file) break; } }
+  }
+  if (!file) {
+    toast("No file received. Drag the .xlsx from File Explorer (not from inside the editor), or use Browse.", true);
+    return;
+  }
+  if (!/\.xls[xm]$/i.test(file.name)) { toast("Please drop a .xlsx file", true); return; }
+  handleFile(file);
 }
-
-// Also allow dropping anywhere on the page once the app is loaded, as a
-// safety net (some browsers only fire drop reliably on the whole window).
-window.addEventListener("dragover", (e) => e.preventDefault());
-window.addEventListener("drop", (e) => {
-  if (e.target.closest && e.target.closest("#dropZone")) return; // already handled above
+window.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e)) return;
   e.preventDefault();
-  const file = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (file && file.name.toLowerCase().endsWith(".xlsx")) handleFile(file);
+  dragDepth++;
+  if (dropZone) dropZone.classList.add("dragover");
+});
+window.addEventListener("dragover", (e) => {
+  e.preventDefault();                                   // required, or the browser refuses the drop
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+});
+window.addEventListener("dragleave", (e) => {
+  if (!hasFiles(e)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0 && dropZone) dropZone.classList.remove("dragover");
+});
+window.addEventListener("drop", (e) => {
+  e.preventDefault();                                   // otherwise the browser opens/downloads the file itself
+  dragDepth = 0;
+  if (dropZone) dropZone.classList.remove("dragover");
+  takeDroppedFile(e);
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -116,9 +118,14 @@ async function handleFile(file) {
   const fd = new FormData();
   fd.append("file", file);
   const mb = (file.size / 1e6).toFixed(1);
+  await loadWorkbook(`Uploading ${file.name} (${mb} MB)…`, `${API_BASE}/api/upload`, { method: "POST", body: fd }, file.name);
+}
+
+async function loadWorkbook(info, url, init, name) {
   try {
-    showInfo(`Uploading ${file.name} (${mb} MB)…`);
-    const res = await fetch(`${API_BASE}/api/upload`, { method: "POST", body: fd });
+    showInfo(info);
+    const res = await fetch(url, init);
+    if (res.status === 404 || res.status === 405) throw new Error("the server is out of date — stop it and start it again");
     if (!res.ok) throw new Error(await errorText(res, `The server rejected the file (${res.status})`));
     const data = await res.json();
     state.sessionId = data.session_id;
@@ -130,7 +137,7 @@ async function handleFile(file) {
     $("#downloadBtn").disabled = false;
     renderSheetList();
     await selectSheet(state.sheets[0].name, { resetPage: true });
-    toast(`Loaded ${file.name} — ${data.sheets.length} sheet(s)` +
+    toast(`Loaded ${name} — ${data.sheets.length} sheet(s)` +
           (data.mode === "stream" ? " · large workbook mode" : ""));
     pollSheets();                       // the other sheets keep loading in the background
   } catch (err) {

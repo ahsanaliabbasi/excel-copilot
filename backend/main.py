@@ -550,16 +550,10 @@ def _forget(session):
 # ---------------------------------------------------------------------------
 # upload
 # ---------------------------------------------------------------------------
-@app.post("/api/upload")
-def upload(file: UploadFile = File(...)):
-    if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
-        raise HTTPException(400, "Please upload an .xlsx file (older .xls files are not supported).")
-    os.makedirs(WORKDIR, exist_ok=True)
-    path = os.path.join(WORKDIR, f"{uuid.uuid4()}.xlsx")
-    with open(path, "wb") as out:
-        shutil.copyfileobj(file.file, out, 1 << 20)
+def _register_upload(path, filename):
+    """Turn a saved workbook (already inside WORKDIR) into a session and return the upload response."""
     try:
-        session = _new_session(path, file.filename)
+        session = _new_session(path, filename)
         _df(session, session["names"][0])                # the sheet you land on is ready straight away
     except Exception as e:
         os.remove(path)
@@ -571,8 +565,19 @@ def upload(file: UploadFile = File(...)):
     SESSIONS[session_id] = session
     session["preloaded"] = 1
     threading.Thread(target=_preload, args=(session,), daemon=True).start()
-    return {"session_id": session_id, "filename": file.filename, "mode": session["mode"],
+    return {"session_id": session_id, "filename": filename, "mode": session["mode"],
             "cells": session["cells"], "sheets": _sheet_list(session)}
+
+
+@app.post("/api/upload")
+def upload(file: UploadFile = File(...)):
+    if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "Please upload an .xlsx file (older .xls files are not supported).")
+    os.makedirs(WORKDIR, exist_ok=True)
+    path = os.path.join(WORKDIR, f"{uuid.uuid4()}.xlsx")
+    with open(path, "wb") as out:
+        shutil.copyfileobj(file.file, out, 1 << 20)
+    return _register_upload(path, file.filename)
 
 
 @app.get("/api/sheets/{session_id}")
