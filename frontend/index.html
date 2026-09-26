@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Excel Copilot — No-Formula Spreadsheet Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=17">
+<script>try{var th=localStorage.getItem("theme");if(th)document.documentElement.setAttribute("data-theme",th)}catch(e){}</script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 21V9"/></svg></span>
+    Excel Copilot
+  </div>
+  <div class="topbar-actions">
+    <button id="themeToggle" class="theme-toggle" type="button">Dark mode</button>
+    <input type="file" id="fileInput" accept=".xlsx" hidden>
+    <button id="uploadBtn" class="btn primary">Upload Excel File</button>
+    <button id="downloadBtn" class="btn success" disabled>Download Edited File</button>
+  </div>
+</header>
+
+<div class="app" id="app" hidden>
+  <aside class="sidebar">
+    <h3>Sheets</h3>
+    <div id="sheetList" class="sheet-list"></div>
+
+    <h3>Operations</h3>
+    <div class="op-list">
+      <button class="op-btn" data-op="BUILDER">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v6"/><circle cx="6" cy="12" r="3"/><path d="M9 12h3a3 3 0 0 1 3 3v3"/><rect x="12" y="18" width="6" height="4" rx="1"/><path d="M15 12h3"/></svg>
+        <span class="op-text"><span class="op-title">Formula Builder</span><span class="op-sub">IF · nested IF · lookups · text · maths</span></span>
+      </button>
+      <button class="op-btn" data-op="SQL">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+        <span class="op-text"><span class="op-title">SQL Query</span><span class="op-sub">JOIN · WHERE · GROUP BY · UPDATE → formula</span></span>
+      </button>
+      <button class="op-btn" data-op="CONCAT">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+        <span class="op-text"><span class="op-title">Combine Columns</span><span class="op-sub">CONCAT · CONCATENATE · TEXTJOIN</span></span>
+      </button>
+      <button class="op-btn" data-op="LOOKUP">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <span class="op-text"><span class="op-title">Lookup / Match</span><span class="op-sub">XLOOKUP · VLOOKUP · INDEX-MATCH</span></span>
+      </button>
+      <button class="op-btn" data-op="IF">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+        <span class="op-text"><span class="op-title">IF / Decision Flow</span><span class="op-sub">IF · IFNA · nested YES / NO</span></span>
+      </button>
+      <button class="op-btn" data-op="CONDITIONAL_AGG">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 7V5H6l6 7-6 7h12v-2"/></svg>
+        <span class="op-text"><span class="op-title">Totals & Counts</span><span class="op-sub">SUMIF · COUNTIF · AVERAGEIF · MAXIF</span></span>
+      </button>
+      <button class="op-btn" data-op="TEXT_CLEAN">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>
+        <span class="op-text"><span class="op-title">Clean Text</span><span class="op-sub">TRIM · UPPER · LOWER · LEN</span></span>
+      </button>
+      <button class="op-btn" data-op="REPLACE">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h13l-3-3"/><path d="M21 17H8l3 3"/></svg>
+        <span class="op-text"><span class="op-title">Replace Text</span><span class="op-sub">SUBSTITUTE · several at once</span></span>
+      </button>
+      <button class="op-btn" data-op="EXTRACT">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h6"/><path d="m17 15 4 4m0-4-4 4"/></svg>
+        <span class="op-text"><span class="op-title">Find & Extract</span><span class="op-sub">LEFT · RIGHT · MID · FIND · SEARCH</span></span>
+      </button>
+      <button class="op-btn" data-op="CALC">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 12h.01M12 12h.01M15 12h.01M9 16h.01M12 16h.01M15 16h.01"/></svg>
+        <span class="op-text"><span class="op-title">Calculate</span><span class="op-sub">+ − × ÷ · SUM · MAX · AVERAGE</span></span>
+      </button>
+      <button class="op-btn" data-op="ROUND">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9h14"/><path d="M5 15h14"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></svg>
+        <span class="op-text"><span class="op-title">Round Number</span><span class="op-sub">ROUND · ROUNDUP · ROUNDDOWN</span></span>
+      </button>
+      <button class="op-btn" data-op="DATE">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+        <span class="op-text"><span class="op-title">Dates</span><span class="op-sub">EDATE · TODAY · TEXT</span></span>
+      </button>
+    </div>
+
+    <h3>History</h3>
+    <div id="historyList" class="history-list"></div>
+  </aside>
+
+  <main class="main">
+    <div class="card">
+      <div class="grid-toolbar">
+        <span id="currentSheetLabel" class="sheet-title">No sheet selected</span>
+        <span id="rowCountLabel" class="chip"></span>
+        <div class="tb-group">
+          <label class="tb-toggle" title="Turn this on to edit cells. It is off by default so nothing changes by accident.">
+            <input type="checkbox" id="editToggle"><span class="switch"></span><span id="editToggleLabel">Allow editing</span>
+          </label>
+          <button class="tb-btn" id="btnUndo" type="button" title="Undo the last edit (Ctrl+Z)">Undo</button>
+          <button class="tb-btn" id="btnCopy" type="button" title="Copy the selection (Ctrl+C) — paste it straight into Excel">Copy</button>
+          <button class="tb-btn" id="btnCopyH" type="button" title="Copy the selection together with its column names">Copy + headers</button>
+          <button class="tb-btn" id="btnPaste" type="button" title="Paste from Excel at the selected cell (Ctrl+V)">Paste</button>
+          <button class="tb-btn" id="btnDup" type="button" title="Highlight duplicate rows">Duplicates</button>
+          <label class="tb-select" title="Pick the striped row colours">Row colors
+            <select id="bandSelect">
+              <option value="blue">Blue &amp; white</option>
+              <option value="green">Green &amp; white</option>
+              <option value="purple">Lavender &amp; white</option>
+              <option value="amber">Amber &amp; white</option>
+              <option value="rose">Rose &amp; white</option>
+              <option value="slate">Gray &amp; white</option>
+              <option value="none">No stripes</option>
+            </select>
+          </label>
+        </div>
+        <label class="header-row-label">
+          Header row
+          <input type="number" id="headerRowInput" min="1" value="1">
+          <button id="applyHeaderRowBtn" class="btn tiny">Apply</button>
+        </label>
+      </div>
+      <div class="formula-bar">
+        <span id="cellRef" class="cell-ref"></span>
+        <span class="fx">fx</span>
+        <div id="formulaText" class="formula-text"></div>
+        <span id="selStats" class="sel-stats"></span>
+      </div>
+      <div class="grid-wrap" id="gridWrap" tabindex="0">
+        <table id="grid"><thead></thead><tbody></tbody></table>
+      </div>
+      <div class="pager" id="pager" hidden>
+        <button class="tb-btn" id="pgFirst" type="button" title="First page">&laquo;</button>
+        <button class="tb-btn" id="pgPrev" type="button" title="Previous page">&lsaquo;</button>
+        <span id="pagerInfo" class="pager-info"></span>
+        <button class="tb-btn" id="pgNext" type="button" title="Next page">&rsaquo;</button>
+        <button class="tb-btn" id="pgLast" type="button" title="Last page">&raquo;</button>
+        <label class="pager-field">Go to row <input id="pgGoto" type="number" min="1" placeholder="e.g. 40000"></label>
+        <button class="tb-btn" id="pgGo" type="button">Go</button>
+        <label class="pager-field">Rows per page
+          <select id="pgSize"><option>250</option><option>500</option><option selected>1000</option><option>2000</option><option>5000</option></select>
+        </label>
+      </div>
+      <div class="grid-hint" id="gridHint"></div>
+    </div>
+  </main>
+</div>
+
+<div class="empty-state" id="emptyState">
+  <h1>Build formulas by clicking, not typing.</h1>
+  <p>Combine columns, do XLOOKUP/VLOOKUP, clean text, and build SUMIFs — all
+     from buttons. Every change writes a real Excel formula into your file
+     underneath.</p>
+  <div id="dropZone" class="drop-zone">
+    <div class="drop-zone-icon"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></div>
+    <div><strong>Drag and drop</strong> your .xlsx file here</div>
+    <div class="hint" style="margin-top:6px">or</div>
+    <button id="uploadBtn2" class="btn primary" style="margin-top:10px">Browse for a file</button>
+  </div>
+</div>
+
+<!-- Modal -->
+<div id="modalOverlay" class="modal-overlay" hidden>
+  <div class="modal" id="modalBody"></div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="app.js?v=17"></script>
+<script src="grid.js?v=17"></script>
+<script src="builder.js?v=17"></script>
+<script src="sql.js?v=17"></script>
+<script src="dup.js?v=17"></script>
+</body>
+</html>
