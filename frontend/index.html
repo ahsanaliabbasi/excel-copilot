@@ -7,7 +7,7 @@
 <title>Excel Copilot — No-Formula Spreadsheet Editor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css?v=17">
 <script>try{var th=localStorage.getItem("theme");if(th)document.documentElement.setAttribute("data-theme",th)}catch(e){}</script>
 </head>
@@ -103,7 +103,7 @@
           <button class="tb-btn" id="btnDup" type="button" title="Highlight duplicate rows">Duplicates</button>
           <label class="tb-select" title="Pick the striped row colours">Row colors
             <select id="bandSelect">
-              <option value="ember">Ember &amp; cream</option>
+              <option value="sky">Sky &amp; white</option>
               <option value="blue">Blue &amp; white</option>
               <option value="green">Green &amp; white</option>
               <option value="purple">Lavender &amp; white</option>
@@ -148,17 +148,40 @@
 </div>
 
 <div class="empty-state" id="emptyState">
-  <h1>Build formulas by <em>clicking</em>, not typing.</h1>
-  <p>Combine columns, do XLOOKUP/VLOOKUP, clean text, and build SUMIFs — all
-     from buttons. Every change writes a real Excel formula into your file
-     underneath.</p>
-  <div id="dropZone" class="drop-zone" role="button" tabindex="0" title="Click to choose an .xlsx file, or drop one here">
+  <section class="hero">
+    <div class="hero-copy">
+      <span class="crumb"><i></i>Upload <span>/</span> Workbook</span>
+      <h1>Build formulas by <em>clicking</em>, not typing.</h1>
+      <p>Combine columns, do XLOOKUP/VLOOKUP, clean text, and build SUMIFs — all
+         from buttons. Every change writes a real Excel formula into your file
+         underneath.</p>
+      <div class="trust">Real Excel formulas &middot; No code &middot; Works on big workbooks</div>
+    </div>
+    <div id="dropZone" class="drop-zone" role="button" tabindex="0" title="Click to choose an .xlsx file, or drop one here">
     <div class="drop-zone-icon"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></div>
     <div><strong>Drag and drop</strong> your .xlsx file here</div>
     <div class="hint" style="margin-top:6px">or</div>
     <button id="uploadBtn2" class="btn primary" style="margin-top:10px">Browse for a file</button>
   </div>
-  <div class="trust">Real Excel formulas &middot; No code &middot; Works on big workbooks</div>
+  </section>
+
+  <section class="band">
+    <div><div class="band-n">100%</div><div class="band-l">native Excel formulas</div></div>
+    <div><div class="band-n">0</div><div class="band-l">lines of code to write</div></div>
+    <div><div class="band-n">75k+</div><div class="band-l">rows per sheet, no problem</div></div>
+  </section>
+
+  <section class="how">
+    <h2>Spreadsheet work, measured in clicks</h2>
+    <p class="how-sub">Lookups, totals, clean-up and duplicates without ever opening the formula bar.</p>
+    <div class="cards">
+      <div class="info-card"><span class="card-tag">Who it&rsquo;s for</span><span class="card-ic"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span><h3>You know the result, not the formula</h3><p>Describe what you want by picking columns and options. Nothing to memorise.</p></div>
+      <div class="info-card"><span class="card-tag">What we do</span><span class="card-ic"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v6"/><circle cx="6" cy="12" r="3"/><path d="M9 12h3a3 3 0 0 1 3 3v3"/><rect x="12" y="18" width="6" height="4" rx="1"/></svg></span><h3>Guided steps, real formulas</h3><p>XLOOKUP, SUMIF, IF, TEXT and more are written for you, one question at a time.</p></div>
+      <div class="info-card"><span class="card-tag">What you get</span><span class="card-ic"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 11l5 5 5-5"/><path d="M4 20h16"/></svg></span><h3>A file that keeps recalculating</h3><p>Download the edited .xlsx and every formula still works in Excel.</p></div>
+    </div>
+  </section>
+
+  <section class="cta"><span>Ready when you are &mdash; bring your workbook.</span><button class="btn primary" type="button" data-upload>Upload Excel File</button></section>
 </div>
 
 <!-- Modal -->

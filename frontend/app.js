@@ -45,6 +45,7 @@ function openFilePicker() {
 $("#uploadBtn").addEventListener("click", openFilePicker);
 const uploadBtn2 = $("#uploadBtn2");
 if (uploadBtn2) uploadBtn2.addEventListener("click", (e) => { e.stopPropagation(); openFilePicker(); });
+document.querySelectorAll("[data-upload]").forEach((b) => b.addEventListener("click", openFilePicker));
 // clicking anywhere in the drop zone (icon, text, empty space) uploads too
 const dz = $("#dropZone");
 if (dz) {
