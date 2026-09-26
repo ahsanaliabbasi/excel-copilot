@@ -491,7 +491,123 @@ def _rows_payload(session, name, idx):
     }
 
 
-def _grid_payload(session, name, offset=0, limit=PAGE_DEFAULT, dup_spec=None):
+
+# ---------------------------------------------------------------------------
+# column filter / sort (a "view" of the sheet: which rows, in what order - the data itself never changes)
+# ---------------------------------------------------------------------------
+_TEXT_OPS = {"contains", "notcontains", "starts", "ends", "equals", "empty", "notempty"}
+_NUM_OPS = {"=", "!=", ">", ">=", "<", "<=", "empty", "notempty"}
+_DATE_OPS = {"on", "before", "after", "empty", "notempty"}
+
+
+def _col_kind(s):
+    """'number' | 'date' | 'text' - judged from the first values of the column."""
+    vals = s.head(2000).dropna()
+    if not len(vals):
+        return "text"
+    vals = [v for v in vals.iloc[:500].tolist() if v != ""]
+    if not vals:
+        return "text"
+    if all(isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_)) for v in vals):
+        return "number"
+    if all(isinstance(v, (dt.date, np.datetime64)) for v in vals):
+        return "date"
+    return "text"
+
+
+def _filter_mask(s, kind, op, value):
+    text = s.map(lambda v: _display_text(_native(v)))
+    if op == "empty":
+        return (text.str.strip() == "").to_numpy()
+    if op == "notempty":
+        return (text.str.strip() != "").to_numpy()
+    value = "" if value is None else str(value)
+    if kind == "number":
+        if op not in _NUM_OPS:
+            raise HTTPException(400, f"“{op}” can't be used on a number column.")
+        try:
+            x = float(value.replace(",", "").strip())
+        except ValueError:
+            raise HTTPException(400, f"“{value}” isn't a number.")
+        n = pd.to_numeric(s, errors="coerce")
+        return {"=": n == x, "!=": n != x, ">": n > x, ">=": n >= x, "<": n < x, "<=": n <= x}[op].fillna(False).to_numpy()
+    if kind == "date":
+        if op not in _DATE_OPS:
+            raise HTTPException(400, f"“{op}” can't be used on a date column.")
+        d = pd.to_datetime(value, errors="coerce")
+        if pd.isna(d):
+            raise HTTPException(400, f"“{value}” isn't a date (try 2024-03-31).")
+        col = pd.to_datetime(s, errors="coerce").dt.normalize()
+        d = d.normalize()
+        return {"on": col == d, "before": col < d, "after": col > d}[op].fillna(False).to_numpy()
+    if op not in _TEXT_OPS:
+        raise HTTPException(400, f"“{op}” can't be used on a text column.")
+    lo, v = text.str.lower(), value.lower()
+    if op == "contains":
+        return lo.str.contains(v, regex=False).to_numpy()
+    if op == "notcontains":
+        return (~lo.str.contains(v, regex=False)).to_numpy()
+    if op == "starts":
+        return lo.str.startswith(v).to_numpy()
+    if op == "ends":
+        return lo.str.endswith(v).to_numpy()
+    return (lo == v).to_numpy()
+
+
+def _sort_order(s, kind, ids, desc):
+    """`ids` (row positions) put in order of the column; empty cells always go last."""
+    part = s.iloc[ids]
+    text = part.map(lambda v: _display_text(_native(v)))
+    blank = (text.str.strip() == "").to_numpy()
+    if kind == "number":
+        key = pd.to_numeric(part, errors="coerce").to_numpy(dtype=float)
+    elif kind == "date":
+        key = pd.to_datetime(part, errors="coerce").to_numpy()
+    else:
+        key = text.str.lower().to_numpy()
+    bad = blank | (pd.isna(key) if kind != "text" else False)
+    good, rest = ids[~bad], ids[bad]
+    gk = key[~bad]
+    order = np.argsort(gk, kind="stable")
+    if desc:
+        order = order[::-1]
+    return np.concatenate([good[order], rest])
+
+
+def _view_ids(session, name, df, view):
+    """Row positions that pass every filter, in the requested order (None = the whole sheet as it is)."""
+    if not view:
+        return None
+    filters = [f for f in (view.get("filters") or []) if f]
+    sort = view.get("sort")
+    if not filters and not sort:
+        return None
+    key = (name, session["ver"][name], json.dumps([filters, sort], sort_keys=True, default=str))
+    cache = session.setdefault("viewcache", {})
+    if key in cache:
+        return cache[key]
+    ncol = df.shape[1]
+    mask = np.ones(len(df), dtype=bool)
+    for f in filters:
+        c = int(f.get("col", -1))
+        if not 0 <= c < ncol:
+            raise HTTPException(400, "That column no longer exists — clear the filter and try again.")
+        s = df.iloc[:, c]
+        mask &= _filter_mask(s, _col_kind(s), f.get("op"), f.get("value"))
+    ids = np.nonzero(mask)[0]
+    if sort:
+        c = int(sort.get("col", -1))
+        if not 0 <= c < ncol:
+            raise HTTPException(400, "That column no longer exists — clear the sort and try again.")
+        s = df.iloc[:, c]
+        ids = _sort_order(s, _col_kind(s), ids, sort.get("dir") == "desc")
+    if len(cache) > 6:
+        cache.clear()
+    cache[key] = ids
+    return ids
+
+
+def _grid_payload(session, name, offset=0, limit=PAGE_DEFAULT, dup_spec=None, view=None):
     df = _df(session, name)
     total = len(df)
     dup, ids = None, None
@@ -499,6 +615,9 @@ def _grid_payload(session, name, offset=0, limit=PAGE_DEFAULT, dup_spec=None):
         dup = _dup_info(session, name, dup_spec)
         if dup_spec.get("only"):
             ids = dup["dup_ids"]
+    vids = _view_ids(session, name, df, view)
+    if vids is not None:
+        ids = vids if ids is None else vids[np.isin(vids, ids)]      # keeps the sort order
     matched = total if ids is None else len(ids)
     limit = max(1, min(int(limit), PAGE_MAX))
     offset = max(0, int(offset))
@@ -510,6 +629,7 @@ def _grid_payload(session, name, offset=0, limit=PAGE_DEFAULT, dup_spec=None):
     payload = _rows_payload(session, name, idx)
     payload.update({
         "total_rows": total, "matched_rows": matched, "offset": offset, "limit": limit,
+        "col_kinds": [_col_kind(df.iloc[:, c]) for c in range(df.shape[1])],
         "dup": [([int(dup["gid"][i]), int(dup["size"][i])] if dup["gid"][i] >= 0 else None) for i in idx] if dup else None,
         "dup_summary": {"groups": dup["groups"], "rows": dup["rows"], "checked": dup["checked"]} if dup else None,
     })
@@ -616,13 +736,14 @@ class PageRequest(BaseModel):
     offset: int = 0
     limit: int = PAGE_DEFAULT
     dup: Optional[dict] = None            # {"cols": [idx...], "norm": bool, "skip_empty": bool, "only": bool}
+    view: Optional[dict] = None           # {"filters": [{"col", "op", "value"}], "sort": {"col", "dir": "asc"|"desc"}}
 
 
 @app.post("/api/sheet/page")
 def get_page(body: PageRequest):
     session = _get_session(body.session_id)
     _check_sheet(session, body.sheet_name)
-    return _grid_payload(session, body.sheet_name, body.offset, body.limit, body.dup)
+    return _grid_payload(session, body.sheet_name, body.offset, body.limit, body.dup, body.view)
 
 
 @app.get("/api/sheet/{session_id}/{sheet_name}")

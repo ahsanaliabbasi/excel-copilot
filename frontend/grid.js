@@ -19,7 +19,10 @@
     anchor: { r: 0, c: 0 }, active: { r: 0, c: 0 }, rect: { r0: 0, c0: 0, r1: 0, c1: 0 }, sel: "cells",
     painted: [], editing: null, undo: [], drag: null, canEdit: false,
     dupSpec: null, dupInfo: null, dupSummary: null, dupTouched: [],
+    view: { filters: [], sort: null }, kinds: [],        // column filters + sort (applied on the server, across every page)
   };
+  const viewActive = () => G.view.filters.length > 0 || !!G.view.sort;
+  const viewPayload = () => (viewActive() ? G.view : null);
 
   // ------------------------------------------------------------- helpers
   const wrap = () => $("#gridWrap");
@@ -48,12 +51,22 @@
     const cls = cellClass(v, f);
     return `<td${cls ? ` class="${cls}"` : ""}>${esc(disp(v))}</td>`;
   }
+  // column name + sort arrows + filter button
+  function headHtml(name, c) {
+    const s = G.view.sort && G.view.sort.col === c ? G.view.sort.dir : "";
+    const f = G.view.filters.some((x) => x.col === c);
+    return `<div class="nm-wrap"><span class="nm">${esc(name)}</span><span class="hdr-tools">` +
+      `<button type="button" class="ht sort${s === "asc" ? " on" : ""}" data-tool="asc" title="Sort A \u2192 Z / smallest first">&#9650;</button>` +
+      `<button type="button" class="ht sort${s === "desc" ? " on" : ""}" data-tool="desc" title="Sort Z \u2192 A / largest first">&#9660;</button>` +
+      `<button type="button" class="ht filt${f ? " on" : ""}" data-tool="filter" title="Filter this column">` +
+      `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="M1.5 2h13l-5 6v5l-3 1.5V8z" fill="currentColor"/></svg></button></span></div>`;
+  }
   function buildTable() {
     thead().innerHTML =
       `<tr class="letters"><th class="corner all" title="Select all"></th>` +
       G.letters.map((l, c) => `<th class="letter" data-c="${c}">${l}</th>`).join("") + `</tr>` +
       `<tr class="names"><th class="corner rn">${G.headerRow}</th>` +
-      G.columns.map((n, c) => `<th class="name" data-c="${c}" title="${esc(n)}">${esc(n)}</th>`).join("") + `</tr>`;
+      G.columns.map((n, c) => `<th class="name" data-c="${c}" title="${esc(n)}">${headHtml(n, c)}</th>`).join("") + `</tr>`;
     const parts = [];
     for (let r = 0; r < G.rows.length; r++) {
       const row = G.rows[r], fr = G.formulas[r] || [];
@@ -72,15 +85,17 @@
     const keep = same && !opts.resetSel
       ? { active: G.active, anchor: G.anchor, rect: G.rect, sel: G.sel, top: wrap().scrollTop, left: wrap().scrollLeft } : null;
     finishEdit(false);
-    if (!same) { G.undo = []; G.dupSpec = null; }
+    if (!same) { G.undo = []; G.dupSpec = null; G.view = { filters: [], sort: null }; }
     G.sheet = state.currentSheet;
     G.columns = data.columns; G.letters = data.col_letters; G.rows = data.rows; G.formulas = data.formulas;
     G.ids = data.ids; G.idPos = new Map(data.ids.map((id, i) => [id, i]));
     G.headerRow = data.header_row; G.total = data.total_rows; G.matched = data.matched_rows;
     G.offset = data.offset; G.limit = data.limit;
-    G.filtered = !!(G.dupSpec && G.dupSpec.only);
+    G.filtered = !!(G.dupSpec && G.dupSpec.only) || viewActive();
+    G.kinds = data.col_kinds || [];
     G.dupInfo = data.dup; G.dupSummary = data.dup_summary;
     buildTable();
+    paintViewBar();
     if (!nRows() || !nCols()) { paintBars(); refreshLabels(); paintPager(); paintDup(); return; }
     const clampPos = (p) => ({ r: clamp(p.r, 0, nRows() - 1), c: clamp(p.c, 0, nCols() - 1) });
     if (keep) {
@@ -103,8 +118,9 @@
   };
 
   function refreshLabels() {
-    $("#rowCountLabel").textContent = G.filtered
-      ? `${fmt(G.matched)} duplicate rows of ${fmt(G.total)}` : `${fmt(G.total)} rows`;
+    const dupOnly = !!(G.dupSpec && G.dupSpec.only);
+    $("#rowCountLabel").textContent = dupOnly ? `${fmt(G.matched)} duplicate rows of ${fmt(G.total)}`
+      : G.view.filters.length || (G.dupSpec && G.dupSpec.only) ? `${fmt(G.matched)} of ${fmt(G.total)} rows` : `${fmt(G.total)} rows`;
     const meta = state.sheets.find((s) => s.name === G.sheet);
     if (meta) { meta.row_count = G.total; meta.columns = G.columns; meta.loaded = true; renderSheetList(); }
   }
@@ -116,6 +132,7 @@
     const res = await api("/api/sheet/page", {
       session_id: state.sessionId, sheet_name: name, offset, limit: G.limit,
       dup: name === G.sheet ? G.dupSpec : null,
+      view: name === G.sheet ? viewPayload() : null,
     });
     const data = await res.json();
     if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Couldn't load the rows");
@@ -125,7 +142,7 @@
   // Open a sheet (first page). Called by app.js when you pick a sheet.
   window.gridLoadSheet = async function (name, opts = {}) {
     const same = G.sheet === name;
-    if (!same) G.dupSpec = null;
+    if (!same || opts.resetPage) { G.dupSpec = null; G.view = { filters: [], sort: null }; closeFilter(); }
     const offset = same && !opts.resetPage ? G.offset : 0;
     setBusy(true);
     try {
@@ -158,11 +175,127 @@
     pager.hidden = !big;
     if (!big) return;
     const first = G.matched ? G.offset + 1 : 0, last = G.offset + nRows();
-    $("#pagerInfo").textContent = `Rows ${fmt(first)}–${fmt(last)} of ${fmt(G.matched)}${G.filtered ? " (duplicates only)" : ""}`;
+    $("#pagerInfo").textContent = `Rows ${fmt(first)}–${fmt(last)} of ${fmt(G.matched)}${G.dupSpec && G.dupSpec.only ? " (duplicates only)" : viewActive() ? " (filtered)" : ""}`;
     $("#pgFirst").disabled = $("#pgPrev").disabled = G.offset <= 0;
     $("#pgNext").disabled = $("#pgLast").disabled = G.offset >= lastOffset();
     $("#pgGoto").disabled = $("#pgGo").disabled = G.filtered;
     $("#pgSize").value = String(G.limit);
+  }
+
+  // ------------------------------------------------------- column filter + sort
+  // Both run on the server over every row, so they work across pages. The sheet's data never changes -
+  // only which rows are shown and in what order (row numbers stay the real sheet row numbers).
+  const OPS = {
+    text: [["contains", "Contains"], ["starts", "Starts with"], ["ends", "Ends with"], ["equals", "Equals"],
+           ["notcontains", "Doesn't contain"], ["empty", "Is empty"], ["notempty", "Is not empty"]],
+    number: [["=", "Equals"], ["!=", "Does not equal"], [">", "Greater than"], [">=", "Greater or equal"],
+             ["<", "Less than"], ["<=", "Less or equal"], ["empty", "Is empty"], ["notempty", "Is not empty"]],
+    date: [["on", "Is on"], ["before", "Is before"], ["after", "Is after"], ["empty", "Is empty"], ["notempty", "Is not empty"]],
+  };
+  const opLabel = (kind, op) => ((OPS[kind] || OPS.text).find((o) => o[0] === op) || [0, op])[1].toLowerCase();
+  const noValue = (op) => op === "empty" || op === "notempty";
+  let pop = null;
+
+  async function applyView(next) {
+    finishEdit(true);
+    const prev = G.view;
+    G.view = next;
+    setBusy(true);
+    try {
+      window.renderGrid(await fetchPage(G.sheet, 0), { resetSel: true });
+    } catch (e) {
+      G.view = prev;
+      toast(e.message, true);
+    } finally { setBusy(false); }
+  }
+  const withFilter = (c, f) => ({ ...G.view, filters: G.view.filters.filter((x) => x.col !== c).concat(f ? [f] : []) });
+
+  function headTool(btn) {
+    const c = +btn.closest("th").dataset.c, t = btn.dataset.tool;
+    if (t === "filter") { if (pop && pop.c === c) closeFilter(); else openFilter(c, btn); return; }
+    closeFilter();
+    const on = G.view.sort && G.view.sort.col === c && G.view.sort.dir === t;      // pressing the active arrow again turns it off
+    applyView({ ...G.view, sort: on ? null : { col: c, dir: t } });
+  }
+
+  function closeFilter() {
+    if (!pop) return;
+    pop.el.remove();
+    document.removeEventListener("mousedown", pop.away, true);
+    document.removeEventListener("keydown", pop.key, true);
+    pop = null;
+  }
+  function openFilter(c, anchor) {
+    closeFilter();
+    const kind = G.kinds[c] || "text";
+    const cur = G.view.filters.find((x) => x.col === c);
+    const el = document.createElement("div");
+    el.className = "filter-pop";
+    el.innerHTML = `<div class="fp-title">Filter <b>${esc(G.columns[c])}</b> <span>(${kind})</span></div>
+      <select class="fp-op">${OPS[kind].map((o) => `<option value="${esc(o[0])}">${esc(o[1])}</option>`).join("")}</select>
+      <input class="fp-val" ${kind === "date" ? 'type="date"' : 'type="text"'} placeholder="${kind === "number" ? "Number, e.g. 100" : kind === "date" ? "" : "Type here…"}">
+      <div class="fp-hint"></div>
+      <div class="fp-actions"><button type="button" class="btn tiny secondary fp-clear">Clear</button><button type="button" class="btn tiny primary fp-apply">Apply</button></div>`;
+    const op = el.querySelector(".fp-op"), val = el.querySelector(".fp-val"), hint = el.querySelector(".fp-hint");
+    op.value = cur ? cur.op : OPS[kind][0][0];
+    val.value = cur && !noValue(cur.op) ? cur.value : "";
+    const sync = () => {
+      val.hidden = noValue(op.value);
+      hint.textContent = kind === "text" && !noValue(op.value) ? "Not case-sensitive." : "";
+    };
+    op.addEventListener("change", () => { sync(); if (!val.hidden) val.focus(); });
+    sync();
+    const apply = () => {
+      if (!noValue(op.value) && val.value.trim() === "") { toast("Type a value to filter by, or press Clear.", true); val.focus(); return; }
+      closeFilter();
+      applyView(withFilter(c, { col: c, op: op.value, value: noValue(op.value) ? "" : val.value.trim() }));
+    };
+    el.querySelector(".fp-apply").addEventListener("click", apply);
+    el.querySelector(".fp-clear").addEventListener("click", () => { closeFilter(); if (cur) applyView(withFilter(c, null)); });
+    val.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); apply(); } });
+    document.body.append(el);
+    const r = anchor.getBoundingClientRect();
+    el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 8)) + "px";
+    el.style.top = Math.max(8, Math.min(r.bottom + 6, window.innerHeight - el.offsetHeight - 8)) + "px";
+    pop = {
+      c, el,
+      away: (e) => { if (!el.contains(e.target) && !e.target.closest(".ht.filt")) closeFilter(); },
+      key: (e) => { if (e.key === "Escape") { e.stopPropagation(); closeFilter(); } },
+    };
+    document.addEventListener("mousedown", pop.away, true);
+    document.addEventListener("keydown", pop.key, true);
+    (val.hidden ? op : val).focus();
+  }
+
+  // chips under the toolbar: what is filtered / sorted, each removable
+  function paintViewBar() {
+    const bar = $("#viewBar");
+    if (!bar) return;
+    bar.replaceChildren();
+    bar.hidden = !viewActive();
+    if (!viewActive()) return;
+    const chip = (text, onRemove) => {
+      const b = document.createElement("span");
+      b.className = "view-chip";
+      b.append(document.createTextNode(text));
+      const x = document.createElement("button");
+      x.type = "button"; x.textContent = "✕"; x.title = "Remove";
+      x.addEventListener("click", onRemove);
+      b.append(x);
+      bar.append(b);
+    };
+    G.view.filters.forEach((f) => {
+      const kind = G.kinds[f.col] || "text";
+      chip(`${G.columns[f.col]} ${opLabel(kind, f.op)}${noValue(f.op) ? "" : " “" + f.value + "”"}`, () => applyView(withFilter(f.col, null)));
+    });
+    if (G.view.sort) {
+      const so = G.view.sort;
+      chip(`Sorted by ${G.columns[so.col]} ${so.dir === "asc" ? "▲" : "▼"}`, () => applyView({ ...G.view, sort: null }));
+    }
+    const all = document.createElement("button");
+    all.type = "button"; all.className = "link-btn"; all.textContent = "Clear all";
+    all.addEventListener("click", () => applyView({ filters: [], sort: null }));
+    bar.append(all);
   }
 
   // ------------------------------------------------------------ selection
@@ -266,6 +399,8 @@
       if (hit && hit.c >= 0) startEdit(hit.r, hit.c);
     });
     head.addEventListener("click", (e) => {
+      const tool = e.target.closest("[data-tool]");
+      if (tool) { e.stopPropagation(); headTool(tool); return; }
       const th = e.target.closest("th");
       if (!th) return;
       finishEdit(true);

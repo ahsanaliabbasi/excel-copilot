@@ -448,6 +448,7 @@
     if (idx < 0) idx = 0;
     const go = (k) => { B.wizKey = steps[k].key; redraw(); };
     const cur = steps[idx];
+    B.wizard = true; B.wizLast = idx === steps.length - 1;
     const box = h("div", "wiz");
     const dots = h("div", "wiz-dots");
     steps.forEach((st, k) => {
@@ -840,10 +841,10 @@
       const hasKey = !!n.key;
       const first = n.cases[0];
       const simple = hasKey && n.cases.length === 1 && first.return_type === "col" && leafCount(first.where) === 0 && !n.match_pipe.length;
-      const sum = h("div", "summary");
+      const sum = h("div", "summary wiz-extra");
       B.updateSummary = () => { sum.textContent = describeLookup(n); };
       B.updateSummary();
-      b.append(withText("div", "summary-title", "In plain words"), sum);
+      b.append(withText("div", "summary-title wiz-extra", "In plain words"), sum);
 
       // which of several matching rows?
       const orders = [["first", "The first match (top \u2192 bottom)"], ["last", "The last match (bottom \u2192 top)"],
@@ -951,10 +952,10 @@
     agg(n, b) {      if (!n.where) n.where = n.criteria ? { join: "AND", items: n.criteria } : { join: "AND", items: [] };
       delete n.criteria;
       const cur = state.currentSheet, cols = sheetCols(n.sheet);
-      const sum = h("div", "summary");
+      const sum = h("div", "summary wiz-extra");
       B.updateSummary = () => { sum.textContent = describeAgg(n); };
       B.updateSummary();
-      b.append(withText("div", "summary-title", "In plain words"), sum);
+      b.append(withText("div", "summary-title wiz-extra", "In plain words"), sum);
 
       b.append(wizard([
         { key: "rows", short: "which rows", title: `Which rows of \u201c${cur}\u201d should get a value?`, help: "Rows that don't qualify are left empty.",
@@ -992,7 +993,13 @@
     const tree = $("#builderTree");
     if (!tree) return;
     B.updateSummary = null;
+    B.wizard = false;
     tree.replaceChildren(renderNode(B.root, "Result", { test: true }));
+    // In a wizard only the current question is on screen; summary, output and preview appear on the last step.
+    const focus = B.wizard && !B.wizLast;
+    tree.classList.toggle("wiz-mode", B.wizard);
+    tree.classList.toggle("wiz-focus", focus);
+    ["#builderTail", "#applyBtn"].forEach((sel) => { const el = $(sel); if (el) el.hidden = focus; });
     const t = $("#builderTitle");
     if (t && !t.dataset.fixed) t.textContent = B.root.type === PRESETS[B.op] ? (TITLES[B.op] || "Formula Builder") : "Formula Builder";
     changed();
@@ -1042,10 +1049,12 @@
       <h2 id="builderTitle">${esc(TITLES[op] || "Formula Builder")}</h2>
       <p class="modal-sub">${["LOOKUP", "CONDITIONAL_AGG"].includes(op) ? "Answer one question at a time — use Next and Back to move between them." : "Pick what the result should be. A Decision has a YES path and a NO path, and each path can hold another decision."}</p>
       <div id="builderTree"></div>
-      ${outputField(meta, DEFAULT_OUT[op] || "result")}
-      <div class="preview">
-        <div class="preview-title">Live preview <span>— nothing changes until you press Apply</span></div>
-        <div id="previewBody" class="preview-body"></div>
+      <div id="builderTail">
+        ${outputField(meta, DEFAULT_OUT[op] || "result")}
+        <div class="preview">
+          <div class="preview-title">Live preview <span>— nothing changes until you press Apply</span></div>
+          <div id="previewBody" class="preview-body"></div>
+        </div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" onclick="closeModal()">Cancel</button>
