@@ -37,9 +37,21 @@ function toast(msg, isError = false) {
 // opens the OS file picker, so it works even if that dialog is glitchy on
 // your machine/remote desktop).
 // ---------------------------------------------------------------------------
-$("#uploadBtn").addEventListener("click", () => $("#fileInput").click());
+// A fresh, un-hidden input is created for every click: some embedded browsers (IDE previews, remote
+// desktops) ignore .click() on a display:none input. The original input is kept as a fallback.
+function openFilePicker() {
+  try {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".xlsx";
+    inp.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+    inp.addEventListener("change", () => { if (inp.files[0]) handleFile(inp.files[0]); inp.remove(); });
+    document.body.appendChild(inp);
+    inp.click();
+  } catch (e) { $("#fileInput").click(); }
+}
+$("#uploadBtn").addEventListener("click", openFilePicker);
 const uploadBtn2 = $("#uploadBtn2");
-if (uploadBtn2) uploadBtn2.addEventListener("click", () => $("#fileInput").click());
+if (uploadBtn2) uploadBtn2.addEventListener("click", openFilePicker);
 
 $("#fileInput").addEventListener("change", (e) => {
   const file = e.target.files[0];

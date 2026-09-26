@@ -590,8 +590,8 @@
     catch (e) { toast("Your browser blocked clipboard access — click a cell and press Ctrl+V instead.", true); }
   });
   const bandSelect = $("#bandSelect");
-  let savedBand = "blue";
-  try { savedBand = localStorage.getItem("rowBand") || "blue"; } catch (e) { /* storage blocked */ }
+  let savedBand = "ember";
+  try { savedBand = localStorage.getItem("rowBand") || "ember"; } catch (e) { /* storage blocked */ }
   bandSelect.value = savedBand;
   $("#grid").dataset.band = bandSelect.value;
   bandSelect.addEventListener("change", () => {

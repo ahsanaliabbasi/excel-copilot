@@ -7,7 +7,7 @@
 <title>Excel Copilot — No-Formula Spreadsheet Editor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css?v=17">
 <script>try{var th=localStorage.getItem("theme");if(th)document.documentElement.setAttribute("data-theme",th)}catch(e){}</script>
 </head>
@@ -15,7 +15,7 @@
 
 <header class="topbar">
   <div class="brand">
-    <span class="brand-mark"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 21V9"/></svg></span>
+    <span class="brand-mark"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M3 9h18M9 21V9"/></svg></span>
     Excel Copilot
   </div>
   <div class="topbar-actions">
@@ -103,6 +103,7 @@
           <button class="tb-btn" id="btnDup" type="button" title="Highlight duplicate rows">Duplicates</button>
           <label class="tb-select" title="Pick the striped row colours">Row colors
             <select id="bandSelect">
+              <option value="ember">Ember &amp; cream</option>
               <option value="blue">Blue &amp; white</option>
               <option value="green">Green &amp; white</option>
               <option value="purple">Lavender &amp; white</option>
@@ -146,7 +147,7 @@
 </div>
 
 <div class="empty-state" id="emptyState">
-  <h1>Build formulas by clicking, not typing.</h1>
+  <h1>Build formulas by <em>clicking</em>, not typing.</h1>
   <p>Combine columns, do XLOOKUP/VLOOKUP, clean text, and build SUMIFs — all
      from buttons. Every change writes a real Excel formula into your file
      underneath.</p>
@@ -156,6 +157,7 @@
     <div class="hint" style="margin-top:6px">or</div>
     <button id="uploadBtn2" class="btn primary" style="margin-top:10px">Browse for a file</button>
   </div>
+  <div class="trust">Real Excel formulas &middot; No code &middot; Works on big workbooks</div>
 </div>
 
 <!-- Modal -->
