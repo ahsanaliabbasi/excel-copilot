@@ -44,14 +44,15 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 from pydantic import BaseModel
 from python_calamine import CalamineWorkbook
 
+import copy
 from expr_engine import dependency_info, op_expr, referenced_columns, serial
-from formula_engine import OPERATIONS as _LEGACY_OPS
+from formula_engine import OPERATIONS as _LEGACY_OPS, quote_sheet
 from sql_engine import SqlError, Workbench, from_sql_value, sql_value
 
 OPERATIONS = {**_LEGACY_OPS, "EXPR": op_expr}
 
-FRONTEND_VERSION = 17                 # the page files this server expects (bumped whenever the UI changes)
-API_VERSION = 6                       # bump when the page needs newer server code (checked by the frontend)
+FRONTEND_VERSION = 18                 # the page files this server expects (bumped whenever the UI changes)
+API_VERSION = 7                       # bump when the page needs newer server code (checked by the frontend)
 STREAM_CELL_THRESHOLD = 1_000_000     # above this many cells the download is streamed (see module docstring)
 PAGE_DEFAULT, PAGE_MAX = 1000, 5000
 MAX_SESSIONS = 4
@@ -184,6 +185,9 @@ def _new_session(path, filename):
         "colcache": {}, "dupcache": {}, "dupcolcache": {}, "recipes": [], "errors": {},
         "preloaded": 0, "export": None, "added": [],
         "deleted_rows": {}, "row_map": {},                # sheet -> bookkeeping for rows removed by dedup
+        "src": {n: n for n in names},                     # current sheet name -> its name inside the uploaded file
+        "renames": [], "gone": [],                        # sheet renames (in order) / original sheets deleted
+        "footers": {},                                    # sheet -> summary rows pinned under the data
         "lock": threading.RLock(), "created": time.time(),
     }
 
@@ -202,10 +206,10 @@ def _load_orig_formulas(session, name):
     found = {}
     try:
         wb = openpyxl.load_workbook(session["path"], read_only=True, data_only=False)
-        for r, row in enumerate(wb[name].iter_rows(values_only=True), start=1):
+        for r, row in enumerate(wb[session["src"].get(name, name)].iter_rows(values_only=True), start=1):
             for c, v in enumerate(row, start=1):
                 if isinstance(v, str) and v.startswith("="):
-                    found[(r, c)] = v
+                    found[(r, c)] = _apply_renames(session, v)
         wb.close()
     except Exception:
         pass
@@ -219,14 +223,17 @@ def _ensure_grid(session, name):
     with session["lock"]:
         if session["grid"][name] is not None:
             return
-        rows = CalamineWorkbook.from_path(session["path"]).get_sheet_by_name(name).to_python(skip_empty_area=False)
+        rows = CalamineWorkbook.from_path(session["path"]).get_sheet_by_name(session["src"].get(name, name)).to_python(skip_empty_area=False)
         session["grid"][name] = [[_norm_cell(v) for v in r] for r in rows]
         if session["mode"] == "full":
             _load_orig_formulas(session, name)
 
 
-def _load_sheet(rows, header_row):
-    """DataFrame of the data below the header row + the worksheet column index (1-based) of each column."""
+def _load_sheet(rows, header_row, footer=0):
+    """DataFrame of the data below the header row + the worksheet column index (1-based) of each column.
+    `footer` = summary rows pinned at the bottom: they are not data."""
+    if footer:
+        rows = rows[:max(0, len(rows) - footer)]
     if header_row - 1 >= len(rows):
         return pd.DataFrame(), []
     width = max((len(r) for r in rows), default=0)
@@ -256,7 +263,7 @@ def _df(session, name):
         df = session["dfs"].get(name)
         if df is None:
             _ensure_grid(session, name)
-            df, cols = _load_sheet(session["grid"][name], session["meta"][name]["header_row"])
+            df, cols = _load_sheet(session["grid"][name], session["meta"][name]["header_row"], session["meta"][name].get("footer", 0))
             session["dfs"][name], session["cols"][name] = df, cols
         return df
 
@@ -273,6 +280,8 @@ def _touch(session, name):
         session["ver"][name] += 1
         for k in [k for k in session["colcache"] if k[0] == name]:
             del session["colcache"][k]
+        if session["footers"].get(name):
+            _refresh_footer(session, name)
 
 
 def _sheet_ctx(session, name):
@@ -353,7 +362,7 @@ def _delete_rows(session, name, idxs0):
             return 0
         wrowset = set(wrows)
         rm = session["row_map"].setdefault(name, list(range(1, len(grid) + 1)))
-        orig_removed = [rm[wr - 1] for wr in wrows if wr - 1 < len(rm)]
+        orig_removed = [rm[wr - 1] for wr in wrows if wr - 1 < len(rm) and rm[wr - 1]]
         for wr in reversed(wrows):
             del grid[wr - 1]
             if wr - 1 < len(rm):
@@ -379,6 +388,264 @@ def _delete_rows(session, name, idxs0):
         session["dupcolcache"] = {k: v for k, v in session["dupcolcache"].items() if k[0] != name}
         _touch(session, name)
         return len(wrows)
+
+
+# ---------------------------------------------------------------------------
+# sheet bookkeeping: names, summary rows, inserting rows at the end of the data
+# ---------------------------------------------------------------------------
+_PER_SHEET = ("grid", "writes", "wfmt", "dfs", "cols", "ver", "meta", "dims", "parts", "orig_formulas",
+              "deleted_rows", "row_map", "footers", "errors", "src")
+
+
+def _rewrite_sheet_ref(f, old, new):
+    """Formula text with references to sheet `old` pointing at `new` (what Excel does when you rename a tab)."""
+    if not isinstance(f, str) or old not in f:
+        return f
+    nq = "'" + new.replace("'", "''") + "'!"
+    f = f.replace("'" + old.replace("'", "''") + "'!", nq)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", old):
+        f = re.sub(r"(?<![\w'.])" + re.escape(old) + r"!", lambda m: nq, f)
+    return f
+
+
+def _apply_renames(session, f):
+    for old, new in session["renames"]:
+        f = _rewrite_sheet_ref(f, old, new)
+    return f
+
+
+def _check_new_name(session, name, exclude=None):
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(400, "Type a name for the sheet.")
+    if len(name) > 31:
+        raise HTTPException(400, "Sheet names can have at most 31 characters.")
+    if re.search(r"[\[\]:*?/\\]", name):
+        raise HTTPException(400, "Sheet names can't contain  [ ] : * ? / \\")
+    if name.startswith("'") or name.endswith("'"):
+        raise HTTPException(400, "Sheet names can't start or end with an apostrophe.")
+    if any(n.lower() == name.lower() and n != exclude for n in session["names"]):
+        raise HTTPException(400, f"There is already a sheet called “{name}”.")
+    return name
+
+
+def _free_name(session, base):
+    k = 1
+    while any(n.lower() == f"{base} {k}".lower() for n in session["names"]):
+        k += 1
+    return f"{base} {k}"
+
+
+def _replace_in(obj, old, new):
+    """Recursively swap every string equal to `old` (keeps saved recipes pointing at renamed sheets / columns)."""
+    if isinstance(obj, dict):
+        return {k: _replace_in(v, old, new) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_replace_in(v, old, new) for v in obj]
+    return new if obj == old else obj
+
+
+def _new_sheet_entry(session, name, grid, writes=None, wfmt=None, meta=None, footers=None):
+    with session["lock"]:
+        session["names"].append(name)
+        session["grid"][name] = grid
+        width = max((len(r) for r in grid), default=0)
+        session["dims"][name] = (len(grid), width)
+        session["meta"][name] = meta or {"header_row": 1}
+        session["writes"][name], session["wfmt"][name], session["ver"][name] = writes or {}, wfmt or {}, 0
+        if footers:
+            session["footers"][name] = footers
+        session["added"].append(name)
+
+
+def _width(session, name):
+    return max((len(r) for r in session["grid"][name]), default=0)
+
+
+# ---- rows below the data ---------------------------------------------------
+def _footer_count(session, name):
+    return session["meta"][name].get("footer", 0)
+
+
+def _data_end(session, name):
+    """1-based worksheet row of the last row of the data area (i.e. just above any summary rows)."""
+    return len(session["grid"][name]) - _footer_count(session, name)
+
+
+def _trim_tail(session, name):
+    """Drop empty rows between the last data row and the summary rows, so new rows and summary rows sit right under the data."""
+    with session["lock"]:
+        header = session["meta"][name]["header_row"]
+        grid = session["grid"][name]
+        keep_end = header + len(_df(session, name))               # last real data row (1-based)
+        end = _data_end(session, name)
+        if end <= keep_end:
+            return
+        for r in range(keep_end + 1, end + 1):                    # only ever remove rows that are really empty
+            if any(v is not None for v in grid[r - 1]):
+                return
+        cut = end - keep_end
+        del grid[keep_end:end]
+        rm = session["row_map"].get(name)
+        if rm is not None and len(rm) > keep_end:
+            del rm[keep_end:min(len(rm), end)]
+        for store in (session["writes"][name], session["wfmt"][name]):
+            new = {(r - cut if r > end else r, c): v for (r, c), v in store.items() if not (keep_end < r <= end)}
+            store.clear()
+            store.update(new)
+        of = session["orig_formulas"].get(name)
+        if of:
+            session["orig_formulas"][name] = {(r - cut if r > end else r, c): v for (r, c), v in of.items() if not (keep_end < r <= end)}
+
+
+def _open_gap(session, name, at, count):
+    """Insert `count` blank rows at worksheet row `at` (1-based) - grows the data area above the summary rows."""
+    if count <= 0:
+        return
+    with session["lock"]:
+        grid = session["grid"][name]
+        width = _width(session, name)
+        grid[at - 1:at - 1] = [[None] * width for _ in range(count)]
+        rm = session["row_map"].get(name)
+        if rm is not None and at - 1 <= len(rm):
+            rm[at - 1:at - 1] = [0] * count
+        for store in (session["writes"][name], session["wfmt"][name]):
+            new = {(r + count if r >= at else r, c): v for (r, c), v in store.items()}
+            store.clear()
+            store.update(new)
+        of = session["orig_formulas"].get(name)
+        if of:
+            session["orig_formulas"][name] = {(r + count if r >= at else r, c): v for (r, c), v in of.items()}
+        session["dupcache"] = {k: v for k, v in session["dupcache"].items() if k[0] != name}
+        session["dupcolcache"] = {k: v for k, v in session["dupcolcache"].items() if k[0] != name}
+
+
+def _prepare_append(session, name, count):
+    """Make room for `count` new data rows under the existing data; returns the worksheet row of the first one."""
+    _trim_tail(session, name)
+    header = session["meta"][name]["header_row"]
+    start = header + len(_df(session, name)) + 1
+    if _footer_count(session, name):
+        _open_gap(session, name, start, count)
+    return start
+
+
+# ---- summary rows ------------------------------------------------------------
+STAT_FUNCS = {
+    "SUM": "Sum", "AVERAGE": "Average", "MIN": "Min", "MAX": "Max",
+    "COUNT": "Count", "COUNTA": "Count (non-empty)", "MEDIAN": "Median",
+}
+
+
+def _numbers(series):
+    n = pd.to_numeric(series.map(lambda v: None if isinstance(v, (bool, np.bool_)) else v), errors="coerce")
+    return n.dropna()
+
+
+def _stat(series, fn):
+    """(value, ok). ok is False when the column has nothing to calculate on."""
+    if fn == "COUNTA":
+        return int(series.map(lambda v: _display_text(_native(v)).strip() != "").sum()), True
+    nums = _numbers(series)
+    if fn == "COUNT":
+        return int(len(nums)), True
+    if not len(nums):
+        return None, False
+    v = {"SUM": nums.sum, "AVERAGE": nums.mean, "MIN": nums.min, "MAX": nums.max, "MEDIAN": nums.median}[fn]()
+    v = v.item() if hasattr(v, "item") else v
+    if isinstance(v, float):
+        v = int(v) if v.is_integer() and abs(v) < 1e15 else round(v, 10)
+    return v, True
+
+
+def _refresh_footer(session, name):
+    """Recalculate the summary rows of a sheet and (re)write them - formulas AND values - under the data."""
+    specs = session["footers"].get(name)
+    if not specs:
+        return
+    with session["lock"]:
+        header = session["meta"][name]["header_row"]
+        df, cols = _df(session, name), _cols(session, name)
+        end = _data_end(session, name)
+        pos = {c: i for i, c in enumerate(cols)}
+        for k, spec in enumerate(specs):
+            r = end + 1 + k
+            spec["cols"] = [c for c in spec["cols"] if c in pos]
+            for c in spec["cols"]:
+                v, ok = _stat(df.iloc[:, pos[c]], spec["fn"]) if len(df) else (0, True)
+                letter = get_column_letter(c)
+                f = f"={spec['fn']}({letter}{header + 1}:{letter}{max(end, header + 1)})"
+                _set_cell(session, name, r, c, v if ok else None, formula=f)
+            free = next((c for c in cols if c not in spec["cols"]), None)      # the label goes in the first column without a result
+            if free is not None:
+                _set_cell(session, name, r, free, spec["label"])
+
+
+def _add_summary(session, name, fn, wcols):
+    """Add / extend the summary row for `fn` covering worksheet columns `wcols`."""
+    with session["lock"]:
+        specs = session["footers"].setdefault(name, [])
+        spec = next((s for s in specs if s["fn"] == fn), None)
+        if spec is None:
+            _trim_tail(session, name)
+            spec = {"fn": fn, "label": STAT_FUNCS[fn], "cols": []}
+            specs.append(spec)
+            session["meta"][name]["footer"] = len(specs)
+            session["grid"][name].append([None] * _width(session, name))
+            _touch_df_only(session, name)
+        for c in wcols:
+            if c not in spec["cols"]:
+                spec["cols"].append(c)
+        _refresh_footer(session, name)
+        _touch_df_only(session, name)
+
+
+def _touch_df_only(session, name):
+    """The rows the data area covers changed: rebuild what is derived from it (without refreshing summary rows)."""
+    session["dfs"].pop(name, None)
+    session["ver"][name] += 1
+    for k in [k for k in session["colcache"] if k[0] == name]:
+        del session["colcache"][k]
+
+
+def _remove_summary(session, name, k):
+    with session["lock"]:
+        specs = session["footers"].get(name) or []
+        if not 0 <= k < len(specs):
+            raise HTTPException(400, "That summary row no longer exists.")
+        row = _data_end(session, name) + 1 + k
+        del session["grid"][name][row - 1]
+        rm = session["row_map"].get(name)
+        if rm is not None and len(rm) >= row:
+            del rm[row - 1]
+        for store in (session["writes"][name], session["wfmt"][name]):
+            new = {(r - 1 if r > row else r, c): v for (r, c), v in store.items() if r != row}
+            store.clear()
+            store.update(new)
+        del specs[k]
+        session["meta"][name]["footer"] = len(specs)
+        if not specs:
+            session["footers"].pop(name, None)
+        _touch(session, name)
+
+
+def _footer_payload(session, name):
+    specs = session["footers"].get(name) or []
+    if not specs:
+        return []
+    cols = _cols(session, name)
+    grid = session["grid"][name]
+    end = _data_end(session, name)
+    out = []
+    for k, spec in enumerate(specs):
+        r = end + 1 + k
+        row = grid[r - 1] if r - 1 < len(grid) else []
+        out.append({
+            "row": r, "fn": spec["fn"], "label": spec["label"], "index": k,
+            "cells": [_clean(row[c - 1]) if c - 1 < len(row) else None for c in cols],
+            "formulas": [_cell_formula(session, name, r, c) if c in spec["cols"] else None for c in cols],
+        })
+    return out
 
 
 def _reapply_recipe(session, rec):
@@ -632,6 +899,7 @@ def _grid_payload(session, name, offset=0, limit=PAGE_DEFAULT, dup_spec=None, vi
         "col_kinds": [_col_kind(df.iloc[:, c]) for c in range(df.shape[1])],
         "dup": [([int(dup["gid"][i]), int(dup["size"][i])] if dup["gid"][i] >= 0 else None) for i in idx] if dup else None,
         "dup_summary": {"groups": dup["groups"], "rows": dup["rows"], "checked": dup["checked"]} if dup else None,
+        "footer": _footer_payload(session, name),
     })
     return payload
 
@@ -724,6 +992,8 @@ def set_header_row(body: HeaderRowUpdate):
     _check_sheet(session, body.sheet_name)
     with session["lock"]:
         session["meta"][body.sheet_name]["header_row"] = max(1, body.header_row)
+        session["meta"][body.sheet_name]["footer"] = 0           # summary rows turn into ordinary rows
+        session["footers"].pop(body.sheet_name, None)
         session["recipes"] = [r for r in session["recipes"] if r["sheet"] != body.sheet_name]
         _touch(session, body.sheet_name)
         df = _df(session, body.sheet_name)
@@ -1164,6 +1434,15 @@ def edit_cells(body: EditBatch):
         header_row = session["meta"][name]["header_row"]
         df, cols = _df(session, name), _cols(session, name)
         n_before, names_before = len(df), list(df.columns)
+        if _footer_count(session, name) and parsed:
+            room = _data_end(session, name) - header_row                 # data rows incl. any blank ones at the end
+            top = max((e.row for e, _ in parsed if 0 <= e.row <= n_before + 2000), default=-1)
+            if top >= room:
+                _trim_tail(session, name)
+                room = _data_end(session, name) - header_row
+                _open_gap(session, name, header_row + room + 1, top - room + 1)
+                _touch_df_only(session, name)
+                df, cols = _df(session, name), _cols(session, name)
         log, edited = [], set()
         for e, value in parsed:
             if e.row < 0 or e.col < 0 or e.col >= len(cols) or e.row > n_before + 2000:
@@ -1219,25 +1498,39 @@ def _export_full(session, st, out):
     """Small workbook: reopen the original with openpyxl (keeps every style) and apply our changes."""
     st["phase"] = "Opening the original workbook"
     wb = openpyxl.load_workbook(session["path"])
-    names = session["names"]
+    names, src = session["names"], session["src"]
+    for orig in session["gone"]:                                       # sheets deleted in the app
+        if orig in wb.sheetnames:
+            del wb[orig]
+    tmp = {ws.title: ws for ws in wb._sheets}                          # original title -> sheet
+    for i, ws in enumerate(wb._sheets):                                # unique temporary titles, so renames can't collide
+        ws.title = f"__tmp{i}"
+    if session["renames"]:                                             # formulas in the file follow renamed sheets
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str) and cell.value.startswith("="):
+                        cell.value = _apply_renames(session, cell.value)
     for k, name in enumerate(names):
         st["done"], st["phase"] = k, f"Applying changes to {name}"
-        if name in session["added"]:                                   # a sheet made from query results
+        fmts = session["wfmt"][name]
+        if name in session["added"]:                                   # a sheet made in the app (query result, new, copy)
             ws = wb.create_sheet(name)
             for r, row in enumerate(session["grid"][name], start=1):
                 for c, v in enumerate(row, start=1):
                     if v is not None:
                         ws.cell(row=r, column=c, value=v)
-            continue
-        ws = wb[name]
-        for r in sorted(session["deleted_rows"].get(name, []), reverse=True):
-            ws.delete_rows(r, 1)
-        fmts = session["wfmt"][name]
+        else:
+            ws = tmp[src[name]]
+            ws.title = name
+            for r in sorted(session["deleted_rows"].get(name, []), reverse=True):
+                ws.delete_rows(r, 1)
         for (r, c), v in session["writes"][name].items():
             cell = ws.cell(row=r, column=c)
             cell.value = v
             if (r, c) in fmts:
                 cell.number_format = fmts[(r, c)]
+    wb._sheets = [wb[n] for n in names]
     st["phase"] = "Saving"
     wb.save(out)
 
@@ -1562,6 +1855,312 @@ def sql_commit_update(body: CommitBody):
         _touch(session, sheet)
         _recompute(session, {sheet: edited}, [], sheet)
     return {"cells": res["cells_changed"], "rows": res["rows_changed"], "sheet": sheet}
+
+
+# ---------------------------------------------------------------------------
+# sheets: create / rename / duplicate / delete   ·   columns: add / rename
+# ---------------------------------------------------------------------------
+class SheetRef(BaseModel):
+    session_id: str
+    sheet_name: str
+
+
+class CreateSheet(BaseModel):
+    session_id: str
+    name: Optional[str] = None
+    columns: int = 6
+
+
+def _sheet_reply(session, **extra):
+    return {"sheets": _sheet_list(session), **extra}
+
+
+def _clear_derived(session, *names):
+    """Forget everything derived from these sheets (or everything, when no name is given)."""
+    session["colcache"].clear()
+    session["viewcache"] = {}
+    gone = set(names)
+    for key in ("dupcache", "dupcolcache"):
+        session[key] = {k: v for k, v in session[key].items() if gone and k[0] not in gone}
+
+
+@app.post("/api/sheet/create")
+def sheet_create(body: CreateSheet):
+    """A brand-new, empty sheet with named columns (rename them by double-clicking a column name)."""
+    session = _get_session(body.session_id)
+    with session["lock"]:
+        name = _check_new_name(session, body.name) if (body.name or "").strip() else _free_name(session, "Sheet")
+        n = max(1, min(int(body.columns), 200))
+        _new_sheet_entry(session, name, [[f"Column {i + 1}" for i in range(n)]])
+        _df(session, name)
+        return _sheet_reply(session, name=name)
+
+
+class RenameSheet(SheetRef):
+    new_name: str
+
+
+@app.post("/api/sheet/rename")
+def sheet_rename(body: RenameSheet):
+    session = _get_session(body.session_id)
+    _check_sheet(session, body.sheet_name)
+    old = body.sheet_name
+    new = _check_new_name(session, body.new_name, exclude=old)
+    if new == old:
+        return _sheet_reply(session, name=old)
+    with session["lock"]:
+        for key in _PER_SHEET:
+            d = session[key]
+            if old in d:
+                d[new] = d.pop(old)
+        session["names"][session["names"].index(old)] = new
+        session["added"] = [new if n == old else n for n in session["added"]]
+        session["renames"].append((old, new))
+        for store in ("writes", "orig_formulas"):                        # formulas everywhere follow the new name
+            for cells in session[store].values():
+                for key, v in cells.items():
+                    if isinstance(v, str) and v.startswith("="):
+                        cells[key] = _rewrite_sheet_ref(v, old, new)
+        for rec in session["recipes"]:
+            b = rec["body"]
+            if rec["sheet"] == old or old in json.dumps(b.params, default=str) or b.target_sheet == old:
+                b.params = _replace_in(b.params, old, new)
+                rec["info"]["sheets"] = {new if x == old else x for x in rec["info"]["sheets"]}
+            if rec["sheet"] == old:
+                rec["sheet"] = new
+            if b.sheet_name == old:
+                b.sheet_name = new
+            if b.target_sheet == old:
+                b.target_sheet = new
+        _clear_derived(session)
+        return _sheet_reply(session, name=new)
+
+
+@app.post("/api/sheet/delete")
+def sheet_delete(body: SheetRef):
+    session = _get_session(body.session_id)
+    _check_sheet(session, body.sheet_name)
+    name = body.sheet_name
+    if len(session["names"]) <= 1:
+        raise HTTPException(400, "A workbook needs at least one sheet.")
+    with session["lock"]:
+        i = session["names"].index(name)
+        orig = session["src"].get(name)
+        for key in _PER_SHEET:
+            session[key].pop(name, None)
+        session["names"].remove(name)
+        if name in session["added"]:
+            session["added"].remove(name)
+        elif orig:
+            session["gone"].append(orig)
+        session["recipes"] = [r for r in session["recipes"] if r["sheet"] != name]
+        _clear_derived(session)
+        return _sheet_reply(session, current=session["names"][min(i, len(session["names"]) - 1)])
+
+
+@app.post("/api/sheet/duplicate")
+def sheet_duplicate(body: SheetRef):
+    """A copy of a sheet (values, formulas and summary rows) as a new sheet at the end."""
+    session = _get_session(body.session_id)
+    _check_sheet(session, body.sheet_name)
+    name = body.sheet_name
+    with session["lock"]:
+        _df(session, name)
+        if name not in session["added"] and name not in session["orig_formulas"]:
+            _load_orig_formulas(session, name)
+        base, k = name[:24], 2
+        new = f"{base} ({k})"
+        while any(n.lower() == new.lower() for n in session["names"]):
+            k += 1
+            new = f"{base} ({k})"
+        writes = {**session["orig_formulas"].get(name, {}), **session["writes"][name]}
+        _new_sheet_entry(
+            session, new, [list(r) for r in session["grid"][name]], writes=writes, wfmt=dict(session["wfmt"][name]),
+            meta=dict(session["meta"][name]), footers=copy.deepcopy(session["footers"].get(name)))
+        _df(session, new)
+        return _sheet_reply(session, name=new)
+
+
+class AddColumn(SheetRef):
+    name: str = ""
+
+
+@app.post("/api/sheet/add-column")
+def sheet_add_column(body: AddColumn):
+    """A new empty column at the right-hand end of the sheet."""
+    session = _get_session(body.session_id)
+    _check_sheet(session, body.sheet_name)
+    name = body.sheet_name
+    with session["lock"]:
+        df, cols = _df(session, name), _cols(session, name)
+        used = {str(c) for c in df.columns}
+        title = body.name.strip() or f"Column {len(cols) + 1}"
+        base, k = title, 2
+        while title in used:
+            title, k = f"{base}_{k}", k + 1
+        wcol = max(_width(session, name), max(cols, default=0)) + 1
+        _set_cell(session, name, session["meta"][name]["header_row"], wcol, title)
+        _touch(session, name)
+        df = _df(session, name)
+        return {"columns": list(df.columns), "index": len(df.columns) - 1, "name": title}
+
+
+class RenameColumn(SheetRef):
+    col: int
+    name: str
+
+
+@app.post("/api/sheet/rename-column")
+def sheet_rename_column(body: RenameColumn):
+    session = _get_session(body.session_id)
+    _check_sheet(session, body.sheet_name)
+    name = body.sheet_name
+    with session["lock"]:
+        df, cols = _df(session, name), _cols(session, name)
+        if not 0 <= body.col < len(cols):
+            raise HTTPException(400, "That column no longer exists.")
+        new, old = body.name.strip(), str(df.columns[body.col])
+        if not new:
+            raise HTTPException(400, "A column needs a name.")
+        if new != old and new in {str(c) for c in df.columns}:
+            raise HTTPException(400, f"There is already a column called “{new}”.")
+        _set_cell(session, name, session["meta"][name]["header_row"], cols[body.col], new)
+        for rec in session["recipes"]:                                   # saved formulas keep finding the column
+            b = rec["body"]
+            if rec["sheet"] == name or name in json.dumps(b.params, default=str):
+                b.params = _replace_in(b.params, old, new)
+        _touch(session, name)
+        _clear_derived(session)
+        return {"columns": list(_df(session, name).columns)}
+
+
+# ---------------------------------------------------------------------------
+# summary rows (Sum, Average, Min, Max ... pinned under the data)
+# ---------------------------------------------------------------------------
+class SummaryBody(SheetRef):
+    cols: List[int]
+    fn: str
+    add: bool = True                 # False = only calculate (e.g. to prefill a filter), don't add a row
+
+
+@app.post("/api/sheet/summary")
+def sheet_summary(body: SummaryBody):
+    session = _get_session(body.session_id)
+    _check_sheet(session, body.sheet_name)
+    name, fn = body.sheet_name, body.fn.upper()
+    if fn not in STAT_FUNCS:
+        raise HTTPException(400, f"Unknown calculation {body.fn}")
+    with session["lock"]:
+        df, cols = _df(session, name), _cols(session, name)
+        results, skipped = [], []
+        for c in sorted({int(c) for c in body.cols}):
+            if not 0 <= c < len(cols):
+                continue
+            v, ok = _stat(df.iloc[:, c], fn) if len(df) else (None, False)
+            (results if ok else skipped).append({"col": c, "name": str(df.columns[c]), "value": _clean(v)})
+        if not results:
+            what = ", ".join(f"“{s['name']}”" for s in skipped[:3]) or "That column"
+            raise HTTPException(400, f"{what} has no numbers to work out the {STAT_FUNCS[fn].lower()} of. "
+                                     "Pick a column with numbers (or use Count (non-empty)).")
+        if body.add:
+            _add_summary(session, name, fn, [cols[r["col"]] for r in results])
+        return {"fn": fn, "label": STAT_FUNCS[fn], "results": results, "skipped": [s["name"] for s in skipped],
+                "added": body.add}
+
+
+class SummaryRemove(SheetRef):
+    index: int
+
+
+@app.post("/api/sheet/summary-remove")
+def sheet_summary_remove(body: SummaryRemove):
+    session = _get_session(body.session_id)
+    _check_sheet(session, body.sheet_name)
+    _remove_summary(session, body.sheet_name, body.index)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# copy columns / rows to another sheet (as values)
+# ---------------------------------------------------------------------------
+class CopyTo(SheetRef):
+    cols: List[int]
+    rows: Optional[List[int]] = None        # absolute row ids, in the order shown; None = every row (that passes the view)
+    view: Optional[dict] = None
+    dest_mode: str = "new"                  # "new" | "existing"
+    dest_name: str = ""                     # new: the sheet's name (blank = automatic) - existing: which sheet
+    dest_col: int = 0                       # existing: the column (0-based) where the first copied column goes
+    include_headers: bool = False           # existing: also paste the column names as a row
+
+
+@app.post("/api/sheet/copy-to")
+def sheet_copy_to(body: CopyTo):
+    session = _get_session(body.session_id)
+    _check_sheet(session, body.sheet_name)
+    with session["lock"]:
+        df = _df(session, body.sheet_name)
+        cidx = [c for c in body.cols if 0 <= c < df.shape[1]]
+        if not cidx:
+            raise HTTPException(400, "Select the columns to copy first.")
+        if body.rows is not None:
+            ids = np.array([i for i in body.rows if 0 <= i < len(df)], dtype=int)
+        else:
+            v = _view_ids(session, body.sheet_name, df, body.view)
+            ids = np.arange(len(df)) if v is None else v
+        if len(ids) * len(cidx) > 3_000_000:
+            raise HTTPException(400, "That is too many cells to copy at once (limit 3 million).")
+        heads = [str(df.columns[c]) for c in cidx]
+        block = [[_native(v) for v in row] for row in df.iloc[ids, cidx].itertuples(index=False)]
+        is_date = lambda v: isinstance(v, (dt.date, dt.datetime))
+
+        if body.dest_mode == "new":
+            base = body.dest_name.strip() or f"{body.sheet_name[:24]} copy"
+            name = _check_new_name(session, body.dest_name) if body.dest_name.strip() else _free_name(session, base)
+            seen, hdr = {}, []
+            for h in heads:
+                seen[h] = seen.get(h, 0) + 1
+                hdr.append(h if seen[h] == 1 else f"{h}_{seen[h]}")
+            writes, wfmt = {}, {}
+            for i, row in enumerate(block):
+                for j, v in enumerate(row):
+                    if is_date(v):
+                        writes[(i + 2, j + 1)], wfmt[(i + 2, j + 1)] = v, "yyyy-mm-dd"
+            _new_sheet_entry(session, name, [hdr] + block, writes=writes, wfmt=wfmt)
+            _df(session, name)
+            return _sheet_reply(session, name=name, rows=len(block), cols=len(cidx))
+
+        dest = body.dest_name
+        _check_sheet(session, dest)
+        ddf, dcols = _df(session, dest), _cols(session, dest)
+        dstart = max(0, min(int(body.dest_col), len(dcols)))
+        extra = 1 if body.include_headers else 0
+        new_from = max(_width(session, dest), max(dcols, default=0)) + 1       # first worksheet column for columns that don't exist yet
+        header_row = session["meta"][dest]["header_row"]
+        used = {str(c) for c in ddf.columns}
+        start = _prepare_append(session, dest, len(block) + extra)
+        wcols = []
+        for j, h in enumerate(heads):
+            tp = dstart + j
+            if tp < len(dcols):
+                wcols.append(dcols[tp])
+            else:
+                wc = new_from + (tp - len(dcols))
+                title, k = h, 2
+                while title in used:
+                    title, k = f"{h}_{k}", k + 1
+                used.add(title)
+                _set_cell(session, dest, header_row, wc, title)
+                wcols.append(wc)
+        if body.include_headers:
+            for j, h in enumerate(heads):
+                _set_cell(session, dest, start, wcols[j], h)
+        for i, row in enumerate(block):
+            for j, v in enumerate(row):
+                if v is not None:
+                    _set_cell(session, dest, start + extra + i, wcols[j], v, fmt="yyyy-mm-dd" if is_date(v) else None)
+        _touch(session, dest)
+        _df(session, dest)
+        return _sheet_reply(session, name=dest, rows=len(block), cols=len(cidx))
 
 
 @app.get("/api/health")

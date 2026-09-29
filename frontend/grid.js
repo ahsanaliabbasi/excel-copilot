@@ -11,7 +11,7 @@
  */
 (function () {
   "use strict";
-  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).grid = 17;
+  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).grid = 18;
 
   const G = {
     sheet: null, columns: [], letters: [], rows: [], formulas: [], ids: [], idPos: new Map(),
@@ -20,6 +20,7 @@
     painted: [], editing: null, undo: [], drag: null, canEdit: false,
     dupSpec: null, dupInfo: null, dupSummary: null, dupTouched: [],
     view: { filters: [], sort: null }, kinds: [],        // column filters + sort (applied on the server, across every page)
+    footer: [],                                          // summary rows (Sum, Average ...) pinned under the data
   };
   const viewActive = () => G.view.filters.length > 0 || !!G.view.sort;
   const viewPayload = () => (viewActive() ? G.view : null);
@@ -74,9 +75,25 @@
       for (let c = 0; c < row.length; c++) tds += cellHtml(row[c], fr[c]);
       parts.push(`<tr data-r="${r}"><td class="rn">${rowNum(r)}</td>${tds}</tr>`);
     }
-    tbody().innerHTML = parts.join("");
+    tbody().innerHTML = parts.join("") ||
+      (G.columns.length ? `<tr class="empty-row"><td colspan="${G.columns.length + 1}">This sheet has no rows yet — press <b>+ Row</b> and type, or click here and paste from Excel (Ctrl+V).</td></tr>` : "");
+    buildFooter();
     G.painted = [];
     G.dupTouched = [];
+  }
+
+  // summary rows: pinned to the bottom of the grid, outside the data (sorting / filtering never touch them)
+  const sumNum = (v) => (typeof v === "number" && !Number.isInteger(v) ? v.toLocaleString("en-US", { maximumFractionDigits: 4 }) : disp(v));
+  function buildFooter() {
+    const tf = document.querySelector("#grid tfoot");
+    const n = G.footer.length;
+    tf.innerHTML = G.footer.map((f, k) => {
+      const tds = f.cells.map((v, c) => {
+        const cls = (f.formulas[c] ? "sum-val" : v === f.label ? "sum-label" : "") + (typeof v === "number" ? " num" : "");
+        return `<td class="${cls}"${f.formulas[c] ? ` title="${esc(f.formulas[c])}"` : ""}>${esc(sumNum(v))}</td>`;
+      }).join("");
+      return `<tr class="sum-row" data-k="${f.index}" style="--b:${(n - 1 - k) * 27}px"><td class="rn"><button type="button" class="sum-x" title="Remove this summary row">✕</button>${f.row}</td>${tds}</tr>`;
+    }).join("");
   }
 
   // data = a page from the server. opts.resetSel: start with the first cell selected.
@@ -93,6 +110,7 @@
     G.offset = data.offset; G.limit = data.limit;
     G.filtered = !!(G.dupSpec && G.dupSpec.only) || viewActive();
     G.kinds = data.col_kinds || [];
+    G.footer = data.footer || [];
     G.dupInfo = data.dup; G.dupSummary = data.dup_summary;
     buildTable();
     paintViewBar();
@@ -234,6 +252,8 @@
     el.innerHTML = `<div class="fp-title">Filter <b>${esc(G.columns[c])}</b> <span>(${kind})</span></div>
       <select class="fp-op">${OPS[kind].map((o) => `<option value="${esc(o[0])}">${esc(o[1])}</option>`).join("")}</select>
       <input class="fp-val" ${kind === "date" ? 'type="date"' : 'type="text"'} placeholder="${kind === "number" ? "Number, e.g. 100" : kind === "date" ? "" : "Type here…"}">
+      <div class="fp-quick" ${kind === "number" ? "" : "hidden"}><span>Use the column's</span>
+        ${["AVERAGE:Average", "MEDIAN:Median", "MIN:Min", "MAX:Max"].map((x) => `<button type="button" class="fp-q" data-fn="${x.split(":")[0]}">${x.split(":")[1]}</button>`).join("")}</div>
       <div class="fp-hint"></div>
       <div class="fp-actions"><button type="button" class="btn tiny secondary fp-clear">Clear</button><button type="button" class="btn tiny primary fp-apply">Apply</button></div>`;
     const op = el.querySelector(".fp-op"), val = el.querySelector(".fp-val"), hint = el.querySelector(".fp-hint");
@@ -244,6 +264,18 @@
       hint.textContent = kind === "text" && !noValue(op.value) ? "Not case-sensitive." : "";
     };
     op.addEventListener("change", () => { sync(); if (!val.hidden) val.focus(); });
+    el.querySelectorAll(".fp-q").forEach((b) => b.addEventListener("click", async () => {
+      try {
+        const res = await api("/api/sheet/summary", { session_id: state.sessionId, sheet_name: G.sheet, cols: [c], fn: b.dataset.fn, add: false });
+        const d = await res.json();
+        if (!res.ok) throw new Error(typeof d.detail === "string" ? d.detail : "Couldn't work that out");
+        val.hidden = false;
+        val.value = String(d.results[0].value);
+        if (noValue(op.value) || op.value === "=") op.value = ">";
+        sync(); hint.textContent = `${b.textContent} of ${G.columns[c]} = ${d.results[0].value}`;
+        val.focus();
+      } catch (e) { toast(e.message, true); }
+    }));
     sync();
     const apply = () => {
       if (!noValue(op.value) && val.value.trim() === "") { toast("Type a value to filter by, or press Clear.", true); val.focus(); return; }
@@ -620,8 +652,9 @@
     return rows;
   }
   function pasteText(text) {
-    if (!text || !nRows() || !nCols()) return;
+    if (!text || !nCols()) return;
     if (!requireEdit()) return;
+    if (!nRows()) { addRowsLocal(1); selectCell(0, 0, false); }
     const rows = parseTSV(text);
     if (rows.length > 1 && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === "") rows.pop();
     const { r0, c0, r1, c1 } = G.rect, edits = [];
@@ -714,6 +747,42 @@
     if (!G.dupSpec) return;
     G.dupSpec = null;
     await loadPage(0);
+  };
+
+  // ------------------------------------------------------------ new rows / API for tools.js
+  // Blank rows exist only in the browser until you type in them; the server adds the row on the first edit.
+  function addRowsLocal(n) {
+    const start = G.ids.length ? G.ids[G.ids.length - 1] + 1 : 0;
+    for (let k = 0; k < n; k++) {
+      G.rows.push(new Array(nCols()).fill(null)); G.formulas.push([]); G.ids.push(start + k);
+      G.idPos.set(start + k, G.ids.length - 1);
+    }
+    buildTable();
+    return G.ids.length - n;
+  }
+  async function addRows(n) {
+    if (!nCols()) return;
+    if (G.filtered) { toast("Clear the filter first — new rows are added at the end of the sheet.", true); return; }
+    setEditable(true);
+    if (G.offset < lastOffset()) await loadPage(lastOffset());
+    const first = addRowsLocal(n || 1);
+    selectCell(first, 0, false);
+    focusGrid();
+    startEdit(first, 0);
+  }
+  window.gridApi = {
+    ready: () => !!(G.sheet && G.columns.length),
+    sheet: () => G.sheet,
+    columns: () => G.columns.slice(),
+    kinds: () => G.kinds.slice(),
+    selection: () => ({ ...G.rect, kind: G.sel, pageIds: G.ids.slice(G.rect.r0, G.rect.r1 + 1) }),
+    view: () => (viewActive() ? G.view : null),
+    dupOnly: () => !!(G.dupSpec && G.dupSpec.only),
+    matched: () => G.matched, total: () => G.total, canEdit: () => G.canEdit,
+    reload: () => loadPage(G.offset, { resetSel: false }),
+    addRows,
+    enableEditing: () => setEditable(true),
+    selectCol: (c) => { selectCols(c, false); const th = thead().rows[1] && thead().rows[1].cells[c + 1]; if (th) th.scrollIntoView({ block: "nearest", inline: "nearest" }); },
   };
 
   // ----------------------------------------------------------------- toolbar

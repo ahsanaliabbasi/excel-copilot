@@ -8,7 +8,7 @@
  */
 (function () {
   "use strict";
-  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).builder = 17;
+  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).builder = 18;
 
   // ------------------------------------------------------------------ data
   const KIND_GROUPS = [

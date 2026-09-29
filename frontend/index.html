@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=17">
+<link rel="stylesheet" href="style.css?v=18">
 <script>try{var th=localStorage.getItem("theme");if(th)document.documentElement.setAttribute("data-theme",th)}catch(e){}</script>
 </head>
 <body>
@@ -28,7 +28,7 @@
 
 <div class="app" id="app" hidden>
   <aside class="sidebar">
-    <h3>Sheets</h3>
+    <div class="side-head"><h3>Sheets</h3><button id="addSheetBtn" class="mini-btn" type="button" title="Add a new empty sheet">+ New sheet</button></div>
     <div id="sheetList" class="sheet-list"></div>
 
     <h3>Operations</h3>
@@ -120,6 +120,22 @@
           <button id="applyHeaderRowBtn" class="btn tiny">Apply</button>
         </label>
       </div>
+      <div class="grid-tools" id="gridTools">
+        <span class="gt-label">Summary row</span>
+        <button class="tb-btn sum-btn" type="button" data-fn="SUM" title="Add the total of the selected column(s) as a row under the data">Sum</button>
+        <button class="tb-btn sum-btn" type="button" data-fn="AVERAGE" title="Add the average of the selected column(s) as a row under the data">Average</button>
+        <button class="tb-btn sum-btn" type="button" data-fn="MIN" title="Add the smallest value of the selected column(s) as a row under the data">Min</button>
+        <button class="tb-btn sum-btn" type="button" data-fn="MAX" title="Add the largest value of the selected column(s) as a row under the data">Max</button>
+        <button class="tb-btn sum-btn" type="button" data-fn="COUNT" title="Add how many numbers the selected column(s) hold as a row under the data">Count</button>
+        <select id="sumMore" class="gt-select" title="More calculations">
+          <option value="">More…</option><option value="MEDIAN">Median</option><option value="COUNTA">Count (non-empty)</option>
+        </select>
+        <span class="gt-sep"></span>
+        <button class="tb-btn" type="button" id="btnAddRow" title="Add an empty row under the data, then type in it">+ Row</button>
+        <button class="tb-btn" type="button" id="btnAddCol" title="Add a new column at the right-hand end">+ Column</button>
+        <span class="gt-sep"></span>
+        <button class="tb-btn" type="button" id="btnCopyTo" title="Copy the selected columns / rows into another sheet (as values)">Copy to sheet…</button>
+      </div>
       <div class="formula-bar">
         <span id="cellRef" class="cell-ref"></span>
         <span class="fx">fx</span>
@@ -128,7 +144,7 @@
       </div>
       <div class="view-bar" id="viewBar" hidden></div>
       <div class="grid-wrap" id="gridWrap" tabindex="0">
-        <table id="grid"><thead></thead><tbody></tbody></table>
+        <table id="grid"><thead></thead><tbody></tbody><tfoot></tfoot></table>
       </div>
       <div class="pager" id="pager" hidden>
         <button class="tb-btn" id="pgFirst" type="button" title="First page">&laquo;</button>
@@ -191,10 +207,11 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js?v=17"></script>
-<script src="grid.js?v=17"></script>
-<script src="builder.js?v=17"></script>
-<script src="sql.js?v=17"></script>
-<script src="dup.js?v=17"></script>
+<script src="app.js?v=18"></script>
+<script src="grid.js?v=18"></script>
+<script src="builder.js?v=18"></script>
+<script src="sql.js?v=18"></script>
+<script src="dup.js?v=18"></script>
+<script src="tools.js?v=18"></script>
 </body>
 </html>
