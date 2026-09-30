@@ -101,6 +101,7 @@ body {
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
 .ic { width: 18px; height: 18px; flex: none; }
 
@@ -148,6 +149,19 @@ body {
 .topbar .btn.success::after { background: var(--btn2-arw-bg); color: var(--btn2-arw-fg); }
 .topbar .btn.success:disabled { opacity: 1; color: var(--text-muted); background: var(--bg-hover); }
 .topbar .btn.success:disabled::after { background: var(--text-muted); color: var(--bg-surface); }
+
+/* Phones: the brand + theme toggle + two pill buttons don't fit one row at desktop sizes —
+   wrap onto a second row and shrink the buttons instead of letting the page scroll sideways. */
+@media (max-width: 640px) {
+  .topbar {
+    height: auto; flex-wrap: wrap; row-gap: 10px; padding: 12px 16px;
+  }
+  .brand { font-size: 17px; }
+  .topbar-actions { width: 100%; flex-wrap: wrap; gap: 8px; }
+  .topbar-actions .btn, .topbar-actions .theme-toggle {
+    flex: 1 1 auto; padding: 9px 12px; font-size: 12.5px; justify-content: center; white-space: nowrap;
+  }
+}
 
 /* ---------- layout ---------- */
 .app { display: grid; grid-template-columns: 300px 1fr; height: calc(100vh - var(--topbar-h)); }
