@@ -6,12 +6,13 @@
  *
  *   selection   click, drag, Shift+click, row numbers, column letters, Ctrl+A
  *   editing     switch on "Allow editing"; double-click / F2 / just type; Enter/Tab/Esc; Delete; Ctrl+Z
+ *   delete row/col   select a whole row (row number) or column (letter/name) then Delete, or right-click it
  *   clipboard   Ctrl+C / X / V round-trip with Excel (tab-separated text); whole columns come from the server
  *   duplicates  found on the server across every row, coloured here
  */
 (function () {
   "use strict";
-  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).grid = 18;
+  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).grid = 19;
 
   const G = {
     sheet: null, columns: [], letters: [], rows: [], formulas: [], ids: [], idPos: new Map(),
@@ -356,6 +357,21 @@
   }
   // the selection covers more rows than this page holds (whole column / whole sheet)
   const spansPages = () => (G.sel === "cols" || G.sel === "all") && !G.filtered && G.matched > nRows();
+  // true if the selection amounts to "the whole row(s)" / "the whole column(s)" even when it wasn't made by
+  // clicking the row number / column letter (e.g. dragging across every cell of a row). A single cell never
+  // counts, even in a 1-row or 1-column sheet, so a plain click there still just clears the cell.
+  function isWholeRows() {
+    if (G.sel === "rows") return true;
+    if (G.sel !== "cells" || nCols() < 2) return false;
+    const { r0, c0, r1, c1 } = G.rect;
+    return c0 === 0 && c1 === nCols() - 1 && !(r0 === r1 && c0 === c1);
+  }
+  function isWholeCols() {
+    if (G.sel === "cols") return true;
+    if (G.sel !== "cells" || nRows() < 2) return false;
+    const { r0, c0, r1, c1 } = G.rect;
+    return r0 === 0 && r1 === nRows() - 1 && !(r0 === r1 && c0 === c1);
+  }
 
   function paint() {
     G.painted.forEach(([el, cls]) => el.classList.remove(cls));
@@ -440,6 +456,27 @@
       if (th.classList.contains("all")) selectAll();
       else if (th.dataset.c !== undefined) selectCols(+th.dataset.c, e.shiftKey);
     });
+    body.addEventListener("contextmenu", (e) => {
+      const hit = cellOf(e.target);
+      if (!hit || hit.c >= 0) return;                          // only the row-number column
+      e.preventDefault();
+      finishEdit(true);
+      focusGrid();
+      if (!(G.sel === "rows" && hit.r >= G.rect.r0 && hit.r <= G.rect.r1)) selectRows(hit.r, false);
+      const n = G.rect.r1 - G.rect.r0 + 1;
+      openCtxMenu([{ label: `Delete ${fmt(n)} row${n === 1 ? "" : "s"}`, danger: true, onClick: deleteRows }], e.clientX, e.clientY);
+    });
+    head.addEventListener("contextmenu", (e) => {
+      const th = e.target.closest("th");
+      if (!th || th.dataset.c === undefined) return;
+      e.preventDefault();
+      finishEdit(true);
+      focusGrid();
+      const c = +th.dataset.c;
+      if (!(G.sel === "cols" && c >= G.rect.c0 && c <= G.rect.c1)) selectCols(c, false);
+      const n = G.rect.c1 - G.rect.c0 + 1;
+      openCtxMenu([{ label: `Delete ${n} column${n === 1 ? "" : "s"}`, danger: true, onClick: deleteCols }], e.clientX, e.clientY);
+    });
     wrap().addEventListener("keydown", onKey);
   }
 
@@ -461,6 +498,8 @@
     if (k === "PageDown") { e.preventDefault(); move(20, 0, e.shiftKey); return; }
     if (k === "PageUp") { e.preventDefault(); move(-20, 0, e.shiftKey); return; }
     if (k === "F2") { e.preventDefault(); startEdit(G.active.r, G.active.c); return; }
+    if (k === "Delete" && isWholeRows()) { e.preventDefault(); deleteRows(); return; }
+    if (k === "Delete" && isWholeCols()) { e.preventDefault(); deleteCols(); return; }
     if (k === "Delete" || k === "Backspace") { e.preventDefault(); clearSelection(); return; }
     if (k.length === 1 && !e.altKey) { e.preventDefault(); startEdit(G.active.r, G.active.c, k); }
   }
@@ -482,7 +521,7 @@
     $("#btnPaste").disabled = !on;
     $("#btnUndo").disabled = !on;
     $("#gridHint").textContent = on
-      ? "Editing is ON — click a cell and type (or double-click) · Enter/Tab move · Delete clears · Ctrl+V pastes · Ctrl+Z undoes"
+      ? "Editing is ON — click a cell and type (or double-click) · Enter/Tab move · Delete clears · a row/column + Delete (or right-click) removes it · Ctrl+V pastes · Ctrl+Z undoes"
       : "Read-only — turn on “Allow editing” to change cells · drag or Shift+click to select · Ctrl+C copies to Excel";
   }
 
@@ -583,6 +622,71 @@
     for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) if (disp(G.rows[r][c]) !== "") edits.push({ r, c, value: null });
     if (spansPages()) toast(`Cleared the ${fmt(edits.length)} cells on this page — other pages weren't touched.`);
     if (edits.length) applyEdits(edits);
+  }
+
+  // ------------------------------------------------------ delete whole rows / columns
+  // Only offered when the selection IS whole rows or whole columns (row numbers / column headers);
+  // a normal cell selection keeps Delete = clear contents, same as Excel.
+  async function deleteRows() {
+    if (!requireEdit()) return;
+    const ids = [];
+    for (let r = G.rect.r0; r <= G.rect.r1; r++) { const id = absId(r); if (id !== null) ids.push(id); }
+    if (!ids.length) return;
+    const ok = await confirmBox(`Delete ${fmt(ids.length)} row${ids.length === 1 ? "" : "s"}?`,
+      "The rows and everything in them are removed for good. This can't be undone.", "Delete");
+    if (!ok) return;
+    try {
+      await sheetPost("/api/sheet/delete-rows", { sheet_name: G.sheet, rows: ids });
+      await loadPage(0);
+      toast(`Deleted ${fmt(ids.length)} row${ids.length === 1 ? "" : "s"}`);
+    } catch (e) { toast(e.message, true); }
+  }
+  async function deleteCols() {
+    if (!requireEdit()) return;
+    const { c0, c1 } = G.rect;
+    const idxs = Array.from({ length: c1 - c0 + 1 }, (_, k) => c0 + k);
+    if (idxs.length >= nCols()) { toast("A sheet needs to keep at least one column.", true); return; }
+    const names = idxs.map((i) => G.columns[i]);
+    const ok = await confirmBox(`Delete ${idxs.length} column${idxs.length === 1 ? "" : "s"}?`,
+      `“${names.slice(0, 4).join("”, “")}${names.length > 4 ? "”…" : "”"} and everything in ${names.length === 1 ? "it" : "them"} will be removed. This can't be undone.`, "Delete");
+    if (!ok) return;
+    try {
+      await sheetPost("/api/sheet/delete-column", { sheet_name: G.sheet, cols: idxs });
+      await loadPage(0);
+      toast(`Deleted ${idxs.length} column${idxs.length === 1 ? "" : "s"}`);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  // ------------------------------------------------------------ right-click menu
+  let ctxMenu = null;
+  function closeCtxMenu() {
+    if (!ctxMenu) return;
+    ctxMenu.el.remove();
+    document.removeEventListener("mousedown", ctxMenu.away, true);
+    document.removeEventListener("keydown", ctxMenu.key, true);
+    ctxMenu = null;
+  }
+  function openCtxMenu(items, x, y) {
+    closeCtxMenu();
+    closeFilter();
+    const el = document.createElement("div");
+    el.className = "ctx-menu";
+    items.forEach((it) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "ctx-item" + (it.danger ? " danger" : ""); b.textContent = it.label;
+      b.addEventListener("click", () => { closeCtxMenu(); it.onClick(); });
+      el.append(b);
+    });
+    document.body.append(el);
+    el.style.left = Math.max(8, Math.min(x, window.innerWidth - el.offsetWidth - 8)) + "px";
+    el.style.top = Math.max(8, Math.min(y, window.innerHeight - el.offsetHeight - 8)) + "px";
+    ctxMenu = {
+      el,
+      away: (e) => { if (!el.contains(e.target)) closeCtxMenu(); },
+      key: (e) => { if (e.key === "Escape") { e.stopPropagation(); closeCtxMenu(); } },
+    };
+    document.addEventListener("mousedown", ctxMenu.away, true);
+    document.addEventListener("keydown", ctxMenu.key, true);
   }
   function undo() {
     if (!requireEdit()) return;

@@ -5,7 +5,7 @@
  */
 (function () {
   "use strict";
-  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).tools = 18;
+  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).tools = 19;
 
   const grid = () => window.gridApi;
   const fmtNum = (v) => (typeof v === "number" ? v.toLocaleString("en-US", { maximumFractionDigits: 4 }) : String(v));

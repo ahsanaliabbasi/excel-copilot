@@ -36,7 +36,8 @@ Copy a column to a new sheet → click its header → **Average** (summary row) 
 API run against the sample workbook: summaries, appending/deleting rows with summary rows present, rename (formulas rewritten in the exported file, including names with apostrophes), delete, duplicate, copy-to, export round-trip with openpyxl. Headless Edge: summary buttons, filter shortcut, copy dialog, new sheet, paste into an empty sheet, + Row, + Column, sheet rename, dark mode. No JS errors.
 
 ## 7. Limits / open items
-- New rows and columns are added at the **end** only (inserting in the middle would have to rewrite formulas inside the original file). No delete-column yet.
+- New rows and columns are added at the **end** only (inserting in the middle would have to rewrite formulas inside the original file).
+- Whole rows/columns can now be deleted (row number / column header: right-click, or select + Delete) — see [DELETE_ROWS_AND_COLUMNS_CONTEXT.md](DELETE_ROWS_AND_COLUMNS_CONTEXT.md).
 - Sheet create / rename / delete / duplicate and summary rows have no undo (cell edits still do). Stream-mode (very large) exports were not re-tested for these features.
 - A row typed under the data does not get the formula columns' formulas automatically (existing behaviour of recipes for appended rows).
 - Summary rows cover whole columns, not the currently filtered rows.

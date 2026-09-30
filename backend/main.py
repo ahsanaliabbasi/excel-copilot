@@ -51,7 +51,7 @@ from sql_engine import SqlError, Workbench, from_sql_value, sql_value
 
 OPERATIONS = {**_LEGACY_OPS, "EXPR": op_expr}
 
-FRONTEND_VERSION = 18                 # the page files this server expects (bumped whenever the UI changes)
+FRONTEND_VERSION = 19                 # the page files this server expects (bumped whenever the UI changes)
 API_VERSION = 7                       # bump when the page needs newer server code (checked by the frontend)
 STREAM_CELL_THRESHOLD = 1_000_000     # above this many cells the download is streamed (see module docstring)
 PAGE_DEFAULT, PAGE_MAX = 1000, 5000
@@ -185,6 +185,7 @@ def _new_session(path, filename):
         "colcache": {}, "dupcache": {}, "dupcolcache": {}, "recipes": [], "errors": {},
         "preloaded": 0, "export": None, "added": [],
         "deleted_rows": {}, "row_map": {},                # sheet -> bookkeeping for rows removed by dedup
+        "deleted_cols": {}, "col_map": {},                # sheet -> bookkeeping for columns removed by hand
         "src": {n: n for n in names},                     # current sheet name -> its name inside the uploaded file
         "renames": [], "gone": [],                        # sheet renames (in order) / original sheets deleted
         "footers": {},                                    # sheet -> summary rows pinned under the data
@@ -390,11 +391,59 @@ def _delete_rows(session, name, idxs0):
         return len(wrows)
 
 
+def _delete_cols(session, name, idxs0):
+    """Remove whole columns (0-based, in the sheet's current column order) for good: from the live grid
+    and from every recorded edit/formula/summary row. Any saved formula that reads a deleted column will
+    simply stop updating (same as any other broken reference) rather than crash. Returns how many were removed."""
+    with session["lock"]:
+        cols = _cols(session, name)                                  # current worksheet column number (1-based) per df column
+        wcols = sorted({cols[i] for i in idxs0 if 0 <= i < len(cols)})
+        if not wcols:
+            return 0
+        wcolset = set(wcols)
+        cm = session["col_map"].setdefault(name, list(range(1, _width(session, name) + 1)))
+        orig_removed = [cm[c - 1] for c in wcols if c - 1 < len(cm) and cm[c - 1]]
+        for c in reversed(wcols):
+            if c - 1 < len(cm):
+                del cm[c - 1]
+        dels = session["deleted_cols"].setdefault(name, [])
+        dels.extend(orig_removed)
+        dels.sort()
+        for row in session["grid"][name]:
+            for c in reversed(wcols):
+                if c - 1 < len(row):
+                    del row[c - 1]
+
+        def shift(c):
+            return c - bisect_right(wcols, c)
+
+        for store_name in ("writes", "wfmt"):
+            store = session[store_name][name]
+            new = {(r, shift(c)): v for (r, c), v in store.items() if c not in wcolset}
+            store.clear()
+            store.update(new)
+        of = session["orig_formulas"].get(name)
+        if of:
+            session["orig_formulas"][name] = {(r, shift(c)): v for (r, c), v in of.items() if c not in wcolset}
+        for spec in session["footers"].get(name, []):
+            spec["cols"] = [shift(c) for c in spec["cols"] if c not in wcolset]
+        for rec in session["recipes"]:                                # a recipe's output column is a fixed worksheet number too
+            if rec["sheet"] == name:
+                rec["out_col"] = None if rec["out_col"] in wcolset else shift(rec["out_col"])
+        session["recipes"] = [r for r in session["recipes"] if r["out_col"] is not None]
+        rows_dim, cols_dim = session["dims"].get(name, (0, 0))
+        session["dims"][name] = (rows_dim, max(0, cols_dim - len(wcols)))
+        session["dupcache"] = {k: v for k, v in session["dupcache"].items() if k[0] != name}
+        session["dupcolcache"] = {k: v for k, v in session["dupcolcache"].items() if k[0] != name}
+        _touch(session, name)
+        return len(wcols)
+
+
 # ---------------------------------------------------------------------------
 # sheet bookkeeping: names, summary rows, inserting rows at the end of the data
 # ---------------------------------------------------------------------------
 _PER_SHEET = ("grid", "writes", "wfmt", "dfs", "cols", "ver", "meta", "dims", "parts", "orig_formulas",
-              "deleted_rows", "row_map", "footers", "errors", "src")
+              "deleted_rows", "row_map", "deleted_cols", "col_map", "footers", "errors", "src")
 
 
 def _rewrite_sheet_ref(f, old, new):
@@ -1525,6 +1574,8 @@ def _export_full(session, st, out):
             ws.title = name
             for r in sorted(session["deleted_rows"].get(name, []), reverse=True):
                 ws.delete_rows(r, 1)
+            for c in sorted(session["deleted_cols"].get(name, []), reverse=True):
+                ws.delete_cols(c, 1)
         for (r, c), v in session["writes"][name].items():
             cell = ws.cell(row=r, column=c)
             cell.value = v
@@ -2003,6 +2054,27 @@ def sheet_add_column(body: AddColumn):
         _touch(session, name)
         df = _df(session, name)
         return {"columns": list(df.columns), "index": len(df.columns) - 1, "name": title}
+
+
+class DeleteColumns(SheetRef):
+    cols: List[int]          # 0-based positions, in the sheet's current column order
+
+
+@app.post("/api/sheet/delete-column")
+def sheet_delete_columns(body: DeleteColumns):
+    session = _get_session(body.session_id)
+    _check_sheet(session, body.sheet_name)
+    name = body.sheet_name
+    with session["lock"]:
+        idxs = sorted({int(i) for i in body.cols if i >= 0})
+        if not idxs:
+            raise HTTPException(400, "Pick at least one column to delete.")
+        if len(idxs) >= len(_cols(session, name)):
+            raise HTTPException(400, "A sheet needs to keep at least one column.")
+        removed = _delete_cols(session, name, idxs)
+        for rec in [r for r in session["recipes"] if r["sheet"] == name]:
+            _reapply_recipe(session, rec)
+        return {"removed": removed, "columns": list(_df(session, name).columns), "sheet": name, "sheets": _sheet_list(session)}
 
 
 class RenameColumn(SheetRef):

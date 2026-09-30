@@ -546,7 +546,7 @@ window.closeModal = closeModal;
 // Backend check: an old server that was never restarted fails quietly, so say so.
 // ---------------------------------------------------------------------------
 const EXPECTED_API_VERSION = 7;
-const FRONTEND_VERSION = 18;               // grid.js and builder.js must report the same number
+const FRONTEND_VERSION = 19;               // grid.js and builder.js must report the same number
 
 function showBanner(msg) {
   const old = document.querySelector(".banner[data-kind='" + msg.slice(0, 12) + "']");
