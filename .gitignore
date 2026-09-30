@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+backend/venv/
+
+# Claude Code local settings
+.claude/
+
+# Sample / personal workbooks — never commit real spreadsheet data
+*.xlsx
+*.xlsm
+sample_data/
+
+# OS cruft
+.DS_Store
+Thumbs.db

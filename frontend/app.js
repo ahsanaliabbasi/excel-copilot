@@ -22,6 +22,12 @@ let state = {
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, opts = {}) => Object.assign(document.createElement(tag), opts);
 
+// Fires a Google Analytics custom event if GA4 is loaded (index.html); a no-op otherwise
+// (e.g. running locally without a Measurement ID), so this is always safe to call.
+function trackEvent(name, params = {}) {
+  try { if (typeof gtag === "function") gtag("event", name, params); } catch (e) { /* analytics must never break the app */ }
+}
+
 function toast(msg, isError = false) {
   const t = $("#toast");
   t.textContent = msg;
@@ -140,6 +146,7 @@ async function loadWorkbook(info, url, init, name) {
     await selectSheet(state.sheets[0].name, { resetPage: true });
     toast(`Loaded ${name} — ${data.sheets.length} sheet(s)` +
           (data.mode === "stream" ? " · large workbook mode" : ""));
+    trackEvent("upload_workbook", { sheet_count: data.sheets.length, mode: data.mode || "full" });
     pollSheets();                       // the other sheets keep loading in the background
   } catch (err) {
     showInfo(null);
@@ -187,6 +194,7 @@ $("#downloadBtn").addEventListener("click", async () => {
     }
     if (st.state !== "done") throw new Error(st.error || "The file couldn't be built");
     window.location.href = `${API_BASE}/api/download/file/${sid}`;
+    trackEvent("download_workbook", { mode: st.mode || "full" });
     if (st.mode === "stream") toast("Large workbook: every value and formula is saved; cell colours and fonts are not.");
   } catch (err) {
     toast("Download failed: " + err.message, true);
@@ -466,6 +474,7 @@ document.addEventListener("click", (e) => {
   if (!state.currentSheet) { toast("Upload a file and pick a sheet first", true); return; }
   try {
     if (typeof openBuilder !== "function") throw new Error("builder.js did not load — press Ctrl+F5");
+    trackEvent("tool_opened", { tool: btn.dataset.op });
     if (btn.dataset.op === "SQL") {
       if (typeof openSql !== "function") throw new Error("sql.js did not load — press Ctrl+F5");
       openSql();
@@ -502,6 +511,7 @@ async function submitOperation(payload) {
       sheet: payload.sheet_name,
     });
     renderHistory();
+    trackEvent("operation_applied", { operation: payload.operation });
     toast(data.static
       ? `Wrote values to "${data.output_column}" (it is also an input, so no formula)`
       : `Applied to column "${data.output_column}"`);
