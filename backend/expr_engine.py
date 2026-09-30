@@ -17,7 +17,7 @@ Node types
     join, textfn, replace, extract,
     find, textfmt                        text
     calc, round, rowagg                  numbers
-    edate, today                         dates
+    dateadd, datediff, edate, today      dates
     lookup, agg                          XLOOKUP/VLOOKUP/INDEX-MATCH, SUMIF/COUNTIF/...
 
 The python side follows Excel's own rules (blank cell -> 0 at the top level,
@@ -214,6 +214,22 @@ def add_months(d, months):
     y = d.year + m // 12
     m = m % 12 + 1
     return dt.date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+
+def complete_months(a, b):
+    """Whole months from a to b, assuming b >= a (DATEDIF ... "m")."""
+    months = (b.year - a.year) * 12 + (b.month - a.month)
+    if b.day < a.day:
+        months -= 1
+    return months
+
+
+def complete_years(a, b):
+    """Whole years from a to b, assuming b >= a (DATEDIF ... "y")."""
+    years = b.year - a.year
+    if (b.month, b.day) < (a.month, a.day):
+        years -= 1
+    return years
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +653,70 @@ class Engine:
 
     def v_today(self, n, i):
         return dt.date.today()
+
+    DATE_UNITS = ("DAYS", "WEEKS", "MONTHS", "QUARTERS", "YEARS")
+
+    def f_dateadd(self, n, row):
+        unit = n.get("unit", "MONTHS")
+        if unit not in self.DATE_UNITS:
+            raise ValueError(f"Unknown date unit '{unit}'")
+        src, amt = self.f(n["source"], row), self.f(n["amount"], row)
+        if unit == "DAYS":
+            return f"({src}+{amt})"
+        if unit == "WEEKS":
+            return f"({src}+({amt})*7)"
+        if unit == "MONTHS":
+            return f"EDATE({src},{amt})"
+        if unit == "QUARTERS":
+            return f"EDATE({src},({amt})*3)"
+        return f"EDATE({src},({amt})*12)"          # YEARS
+
+    def v_dateadd(self, n, i):
+        unit = n.get("unit", "MONTHS")
+        if unit not in self.DATE_UNITS:
+            raise ValueError(f"Unknown date unit '{unit}'")
+        d, amt = to_date(self.v(n["source"], i)), to_num(self.v(n["amount"], i))
+        if unit == "DAYS":
+            return d + dt.timedelta(days=amt)
+        if unit == "WEEKS":
+            return d + dt.timedelta(days=amt * 7)
+        if unit == "MONTHS":
+            return add_months(d, amt)
+        if unit == "QUARTERS":
+            return add_months(d, amt * 3)
+        return add_months(d, amt * 12)              # YEARS
+
+    def f_datediff(self, n, row):
+        unit = n.get("unit", "DAYS")
+        if unit not in self.DATE_UNITS:
+            raise ValueError(f"Unknown date unit '{unit}'")
+        s, e = self.f(n["start"], row), self.f(n["end"], row)
+        if unit == "DAYS":
+            return f"({e}-{s})"
+        if unit == "WEEKS":
+            return f"TRUNC(({e}-{s})/7)"
+        months = f'IF({e}>={s},DATEDIF({s},{e},"m"),-DATEDIF({e},{s},"m"))'
+        if unit == "MONTHS":
+            return months
+        if unit == "QUARTERS":
+            return f"TRUNC(({months})/3)"
+        return f'IF({e}>={s},DATEDIF({s},{e},"y"),-DATEDIF({e},{s},"y"))'      # YEARS
+
+    def v_datediff(self, n, i):
+        unit = n.get("unit", "DAYS")
+        if unit not in self.DATE_UNITS:
+            raise ValueError(f"Unknown date unit '{unit}'")
+        a, b = to_date(self.v(n["start"], i)), to_date(self.v(n["end"], i))
+        if unit == "DAYS":
+            return (b - a).days
+        if unit == "WEEKS":
+            return int((b - a).days / 7)
+        months = complete_months(a, b) if b >= a else -complete_months(b, a)
+        if unit == "MONTHS":
+            return months
+        if unit == "QUARTERS":
+            return int(months / 3)
+        return complete_years(a, b) if b >= a else -complete_years(b, a)      # YEARS
 
     # ---- lookup -----------------------------------------------------------
     # n["match"]  : exact | smaller (exact or next smaller) | larger (exact or next larger) | wildcard

@@ -30,7 +30,12 @@
       ["round", "Round (ROUND)"],
       ["rowagg", "SUM / MAX / MIN / AVERAGE of values in this row"],
     ]],
-    ["Dates", [["edate", "Add / subtract months (EDATE)"], ["today", "Today's date (TODAY)"]]],
+    ["Dates", [
+      ["dateadd", "Add / subtract days, weeks, months, quarters or years"],
+      ["datediff", "Difference between two dates (DATEDIF)"],
+      ["today", "Today's date (TODAY)"],
+      ["textfmt", "Change date format (TEXT)"],
+    ]],
     ["Look up & totals", [
       ["lookup", "Look up from a sheet (XLOOKUP / VLOOKUP / INDEX-MATCH)"],
       ["agg", "Total of matching rows (SUMIF / COUNTIF / AVERAGEIF / MAXIF)"],
@@ -86,7 +91,7 @@
   // Which step each sidebar button starts with
   const PRESETS = {
     BUILDER: "if", CONCAT: "join", LOOKUP: "lookup", IF: "if", CONDITIONAL_AGG: "agg",
-    TEXT_CLEAN: "textfn", REPLACE: "replace", EXTRACT: "extract", CALC: "calc", ROUND: "round", DATE: "edate",
+    TEXT_CLEAN: "textfn", REPLACE: "replace", EXTRACT: "extract", CALC: "calc", ROUND: "round", DATE: "dateadd",
   };
   const TITLES = {
     BUILDER: "Formula Builder", CONCAT: "Combine Columns", LOOKUP: "Lookup / Match Values",
@@ -213,6 +218,8 @@
       case "rowagg": return { type: "rowagg", fn: "SUM", items: [colNode(0), colNode(1)] };
       case "edate": return { type: "edate", source: colNode(0), months: litNode("1") };
       case "today": return { type: "today" };
+      case "dateadd": return { type: "dateadd", source: colNode(0), unit: "MONTHS", amount: litNode("1") };
+      case "datediff": return { type: "datediff", start: colNode(0), end: { type: "today" }, unit: "YEARS" };
       case "lookup":
         return { type: "lookup", method: "XLOOKUP", match: "exact", search: "first", nth: litNode("2"), key: colNode(0), key_src: { col: curCols()[0], pipe: [] }, match_pipe: [], sheet: other.name,
                  match_col: oc[0], cases: [{ where: null, return_col: oc[1] || oc[0], return_type: "col" }], not_found: litNode("Not Found") };
@@ -228,8 +235,14 @@
 
   // -------------------------------------------------------------- rendering
   const INLINE = new Set(["col", "lit", "blank", "today"]);
-  const NUMERIC = new Set(["calc", "round", "rowagg", "find", "agg"]);
-  const TESTABLE = new Set(["textfn", "replace", "extract", "find", "textfmt", "calc", "round", "rowagg", "lookup", "agg", "join", "edate"]);
+  const NUMERIC = new Set(["calc", "round", "rowagg", "find", "agg", "datediff"]);
+  const TESTABLE = new Set(["textfn", "replace", "extract", "find", "textfmt", "calc", "round", "rowagg", "lookup", "agg", "join", "edate", "dateadd", "datediff"]);
+  const UNIT_OPTS = [["DAYS", "Days"], ["WEEKS", "Weeks"], ["MONTHS", "Months"], ["QUARTERS", "Quarters"], ["YEARS", "Years"]];
+  const AMOUNT_LABEL = {
+    DAYS: "Days to add (negative = subtract)", WEEKS: "Weeks to add (negative = subtract)",
+    MONTHS: "Months to add (negative = subtract)", QUARTERS: "Quarters to add (negative = subtract)",
+    YEARS: "Years to add (negative = subtract)",
+  };
 
   // Wraps a finished value in an IF so its result can be tested (greater / less / equals / empty ...)
   const isNumeric = (node) => NUMERIC.has(node.type) || (node.type === "textfn" && ["LEN", "VALUE"].includes(node.fn));
@@ -833,6 +846,18 @@
       b.append(renderNode(n.months, "Months to add (negative = subtract)"));
     },
     today(n, b) { b.append(hint("Today's date — it updates whenever the file is opened in Excel.")); },
+    dateadd(n, b) {
+      b.append(renderNode(n.source, "Date"));
+      b.append(fld("Unit", selectEl(UNIT_OPTS, n.unit || "MONTHS", (v) => { n.unit = v; redraw(); })));
+      b.append(renderNode(n.amount, AMOUNT_LABEL[n.unit || "MONTHS"]));
+    },
+    datediff(n, b) {
+      b.append(renderNode(n.start, "From this date"));
+      b.append(renderNode(n.end, "To this date"));
+      b.append(fld("Difference in", selectEl(UNIT_OPTS, n.unit || "DAYS", (v) => { n.unit = v; changed(); })));
+      const unitLabel = (UNIT_OPTS.find((u) => u[0] === (n.unit || "DAYS")) || [0, "units"])[1].toLowerCase();
+      b.append(hint(`Whole ${unitLabel} from the first date to the second — negative if the first date is later.`));
+    },
 
     lookup(n, b) {
       normalizeLookup(n);
