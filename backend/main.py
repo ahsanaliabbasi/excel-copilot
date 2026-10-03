@@ -51,7 +51,7 @@ from sql_engine import SqlError, Workbench, from_sql_value, sql_value
 
 OPERATIONS = {**_LEGACY_OPS, "EXPR": op_expr}
 
-FRONTEND_VERSION = 19                 # the page files this server expects (bumped whenever the UI changes)
+FRONTEND_VERSION = 20                 # the page files this server expects (bumped whenever the UI changes)
 API_VERSION = 7                       # bump when the page needs newer server code (checked by the frontend)
 STREAM_CELL_THRESHOLD = 1_000_000     # above this many cells the download is streamed (see module docstring)
 PAGE_DEFAULT, PAGE_MAX = 1000, 5000

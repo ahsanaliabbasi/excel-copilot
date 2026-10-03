@@ -556,7 +556,7 @@ window.closeModal = closeModal;
 // Backend check: an old server that was never restarted fails quietly, so say so.
 // ---------------------------------------------------------------------------
 const EXPECTED_API_VERSION = 7;
-const FRONTEND_VERSION = 19;               // grid.js and builder.js must report the same number
+const FRONTEND_VERSION = 20;               // grid.js and builder.js must report the same number
 
 function showBanner(msg) {
   const old = document.querySelector(".banner[data-kind='" + msg.slice(0, 12) + "']");
@@ -569,7 +569,7 @@ function showBanner(msg) {
 // A browser that keeps OLD copies of some script files makes the page fail silently, so check.
 window.addEventListener("load", () => {
   const parts = window.FRONTEND_PARTS || {};
-  const stale = ["grid", "builder", "sql", "dup", "tools"].filter((k) => parts[k] !== FRONTEND_VERSION).map((k) => k + ".js");
+  const stale = ["grid", "builder", "sql", "dup", "tools", "compare"].filter((k) => parts[k] !== FRONTEND_VERSION).map((k) => k + ".js");
   if (stale.length) {
     showBanner(`Your browser is using out-of-date copies of ${stale.join(" and ")}. Press Ctrl+F5 to reload the page files.`);
   }

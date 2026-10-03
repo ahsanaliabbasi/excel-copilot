@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=19">
+<link rel="stylesheet" href="style.css?v=20">
 <script>try{var th=localStorage.getItem("theme");if(th)document.documentElement.setAttribute("data-theme",th)}catch(e){}</script>
 
 <!-- Google Analytics 4 -->
@@ -29,6 +29,7 @@
     Excel Copilot
   </div>
   <div class="topbar-actions">
+    <button id="compareBtn" class="btn" type="button" title="Compare two tables side by side">Compare Files</button>
     <button id="themeToggle" class="theme-toggle" type="button">Dark mode</button>
     <input type="file" id="fileInput" accept=".xlsx" hidden>
     <button id="uploadBtn" class="btn primary">Upload Excel File</button>
@@ -217,11 +218,12 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="app.js?v=19"></script>
-<script src="grid.js?v=19"></script>
-<script src="builder.js?v=19"></script>
-<script src="sql.js?v=19"></script>
-<script src="dup.js?v=19"></script>
-<script src="tools.js?v=19"></script>
+<script src="app.js?v=20"></script>
+<script src="grid.js?v=20"></script>
+<script src="builder.js?v=20"></script>
+<script src="sql.js?v=20"></script>
+<script src="dup.js?v=20"></script>
+<script src="tools.js?v=20"></script>
+<script src="compare.js?v=20"></script>
 </body>
 </html>

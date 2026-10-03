@@ -6,7 +6,7 @@
  */
 (function () {
   "use strict";
-  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).sql = 19;
+  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).sql = 20;
 
   let schema = [];
   let draft = "";

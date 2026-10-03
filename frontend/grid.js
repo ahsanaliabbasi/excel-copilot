@@ -12,7 +12,7 @@
  */
 (function () {
   "use strict";
-  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).grid = 19;
+  (window.FRONTEND_PARTS = window.FRONTEND_PARTS || {}).grid = 20;
 
   const G = {
     sheet: null, columns: [], letters: [], rows: [], formulas: [], ids: [], idPos: new Map(),
